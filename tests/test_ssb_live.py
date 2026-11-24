@@ -77,5 +77,15 @@ class TestPciSelection(unittest.TestCase):
         self.assertIn("PCI selection OK", out.stdout, out.stdout + out.stderr)
 
 
+@unittest.skipUnless(shutil.which("xvfb-run"), "xvfb-run not present")
+class TestChannelSelection(unittest.TestCase):
+    def test_track_scan_switch(self):
+        """Track, a scan and a double-click on a found cell, with the fake board."""
+        out = subprocess.run(["xvfb-run", "-a", sys.executable, str(ROOT / "tests" / "gui" / "check_channel_select.py")],
+                             cwd=ROOT, capture_output=True, text=True, timeout=240,
+                             env={**os.environ, "PYTHONPATH": str(ROOT)})
+        self.assertIn("channel selection ok", out.stdout, out.stdout + out.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

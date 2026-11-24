@@ -102,10 +102,20 @@ Every cut is decoded in a separate process. It is also tried with the other two 
   - CFO of the decoded SSBs, with the chip's own estimate and the CFO the measured clock rate implies;
   - SFN-anchored frame timing with a quadratic clock fit, plus the clock error now (ppm) and its change per minute;
   - SNR (o MIB decoded, x failed).
-- **Side panels:** stream counters (including board losses), the latest MIB fields with RSRP (dBFS, not calibrated) and the chip's PCI, the cell table, a log.
+- **Side panels:** stream counters (including board losses), the latest MIB fields with RSRP (dBFS, not calibrated) and the chip's PCI, the cell table, the channel panel, a log.
 
 **Controls:**
 - Click a row of the cell table to show or hide a PCI, double-click to show only it, "Show all" to undo; `--hide 165` starts with PCIs hidden.
+- **Channel panel** (live only):
+  - **Track:** retunes the board to the LO and SSB frequency typed in. SSB "auto" scans the raster at that LO first. An SSB more than 6.1 MHz from the LO (or within 2 MHz of it) moves the LO next to the SSB.
+  - **Scan:** searches the whole SSB raster at a list of LOs (`2131 2670`, or a range `2175-2715/15`) with 100 bursts each (about 15 s per LO), like `cell_scan`. The table lists band, LO, SSB frequency, PCI, MIBs, SNR and CFO of every cell found.
+  - **Double-click a found cell** to track it: LO, SSB, N_ID2 and CFO come from the scan, so the chip searches only that N_ID2 within ±10 kHz and locks on within seconds.
+  - **Right-click a PCI in the cell table** → "Track PCI … on the chip". This switches the chip to that PCI's N_ID2 at the same frequency, e.g. to the other sector of a site, which the PC decodes from the same cuts.
+  - **CFO centring:** once the SFN timing has measured the board's crystal (ppm), scans and new channels centre their CFO search on it. That matters at 5–6 GHz, where a few ppm are tens of kHz.
+  - A switch stops the running stream (one board, one receiver), starts a new run (new session with `--record`) and clears the plots.
+- **Tested on the board (24 Nov):**
+  - scan of 2131 and 2670 MHz, then a double-click on PCI 317 (n7): 95 MIBs from 96 SSBs, 4.7 s after the click;
+  - right-click from PCI 165 to its sector PCI 166 (chip on N_ID2 1): 49 MIBs from 62 SSBs at −5.5 dB.
 - "Save PNG" writes the figure to `results/`.
 - `--quit-after S --snapshot x.png` saves the figure and a window grab, then quits (used by the tests on a virtual display).
 
@@ -220,7 +230,7 @@ matlab -batch "addpath('matlab','tests'); test_matlab_loader; test_ssb_chain; te
 - The capture client against a fake board on a pseudo-terminal, including SSBDET.
 - The NumPy receiver bit for bit against 5G Toolbox vectors, and against MATLAB's results on recorded cuts.
 - The firmware DSP compiled for the PC.
-- The live view's decoder, clock fit, PCI selection and a full replay on a virtual display (`xvfb-run`).
+- The live view's decoder, clock fit, PCI selection, channel selection (with the fake board: Track, Scan, double-click, sector switch, stale results dropped) and a full replay on a virtual display (`xvfb-run`).
 - In MATLAB, the detector end to end on simulated captures.
 
 Tests that need captures use `samples/` when `data/` is absent.

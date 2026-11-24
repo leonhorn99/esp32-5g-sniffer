@@ -15,6 +15,12 @@ as a session (same format as capture_bursts ssb-stream).
 Replay: an SSBDET session (cuts with the chip's PSS positions) or a session of plain bursts
 (searched for PSS on the PC; give --ssb if the session does not name the SSB frequency).
 
+Channel panel (live): type an LO and an SSB frequency (or 'auto') and press Track; or Scan a list
+of LOs ('2131 2670', '2175-2715/15'): full bursts at each LO are searched over the whole SSB
+raster on the PC (capture/cell_scan.py), and a double-click on a found cell tracks it (LO, SSB,
+N_ID2 and CFO from the scan). Once the SFN timing has measured the board's crystal, scans and
+new channels centre their CFO search on it.
+
 Decoding runs in a separate process. When it falls behind in live mode, cuts are counted
 as skipped instead of queued, so the view stays current.
 Receive only: the board never transmits.
@@ -41,6 +47,45 @@ EXTRA_SSS_THRESHOLD = 18.0  # other N_ID2 tried on every cut: kept if the MIB pa
 REDRAW_MS = 700            # a redraw takes 130-300 ms of the GUI process; results queue up meanwhile
 PCI_COLORS = ("#2a6fdb", "#e07b00", "#1a9e5a", "#b23a9a", "#7a6a00", "#5a5a5a")
 SYM_COLORS = ("#2a6fdb", "#e07b00", "#1a9e5a", "#b23a9a")    # sent QPSK symbol (+,+) (+,-) (-,+) (-,-)
+C5_TUNE_MHZ = ((2130, 2730), (4790, 5990))   # LOs the C5 tunes exactly (docs/hardware.md)
+SSB_HALF_SPAN_MHZ = 6.1                      # SSB centre at most this far from the LO (cell_scan.HALF_SPAN_HZ)
+SCAN_BURSTS = 100                            # full bursts per LO for a scan from the window (about 7 SSB hits of a 20 ms cell)
+# NR downlink ranges inside the C5's tuning ranges (TS 38.101-1); n7 and n41 overlap
+NR_BANDS = (("n1", 2110, 2170), ("n40", 2300, 2400), ("n41", 2496, 2690), ("n38", 2570, 2620), ("n7", 2620, 2690),
+            ("n79", 4400, 5000), ("n46", 5150, 5925), ("n47", 5855, 5925))
+
+
+def nr_band(f_mhz: float) -> str:
+    """NR band name(s) of a downlink frequency, e.g. 'n1' or 'n41/n7'."""
+    return "/".join(b for b, lo, hi in NR_BANDS if lo <= f_mhz <= hi) or "-"
+
+
+def lo_tunable(lo_mhz: int) -> bool:
+    return any(a <= lo_mhz <= b for a, b in C5_TUNE_MHZ)
+
+
+def parse_los(text: str) -> list[int]:
+    """LOs in whole MHz from '2131 2670', '2131, 2670' or ranges '2175-2715/15' (step 15 if omitted)."""
+    out: list[int] = []
+    for tok in text.replace(",", " ").split():
+        if "-" in tok:
+            rng, _, step = tok.partition("/")
+            a, b = (int(float(v)) for v in rng.split("-", 1))
+            out += list(range(a, b + 1, int(step or 15)))
+        else:
+            out.append(int(float(tok)))
+    return out
+
+
+def lo_for_ssb(ssb_mhz: float, lo_mhz: int | None = None) -> int:
+    """An LO (whole MHz) for an SSB centre: the given one if the SSB lies within +-6.1 MHz and away
+    from the LO's DC (2 MHz), else about 5 MHz above the SSB (below near the top of a range)."""
+    if lo_mhz is not None and 2.0 <= abs(ssb_mhz - lo_mhz) <= SSB_HALF_SPAN_MHZ and lo_tunable(lo_mhz):
+        return int(lo_mhz)
+    for lo in (round(ssb_mhz) + 5, round(ssb_mhz) - 5, round(ssb_mhz) + 4, round(ssb_mhz) - 4):
+        if lo_tunable(lo):
+            return int(lo)
+    raise ValueError(f"no tunable LO within {SSB_HALF_SPAN_MHZ} MHz of {ssb_mhz} MHz (C5: {C5_TUNE_MHZ})")
 
 
 def iq_scale(fmt: str, R: int = 1, gsh: int = 0) -> float:
@@ -90,7 +135,7 @@ def decode_job(job: dict) -> list[dict]:
                                       "rsrp_dbfs")}
         keep["pci_chip"] = job.get("pci_chip") if stat is not None else None
         keep.update(seq=job.get("seq"), mode=job.get("mode"), stat=stat, cfo_in=cfo, f_ssb=job["f_ssb"],
-                    epoch=job.get("epoch", 0))
+                    epoch=job.get("epoch", 0), run=job.get("run"))
         if r["ok"]:
             # after decoding, the sent PBCH symbols are known: re-encode the MIB (as nrBCH + nrPBCH)
             m = r["mib"]
@@ -225,8 +270,9 @@ class LiveSource(Source):
                             return
                     idle = False
                     # ssb3: the chip finds the cell itself (all N_ID2 when unknown, CFO +- span: the crystal
-                    # moves by several ppm across resets), and sends decimated cuts (4x less data)
-                    span = a.cfo_span if v3 else 0
+                    # moves by several ppm across resets), and sends decimated cuts (4x less data). A cell
+                    # picked from a scan comes with its CFO: a narrower span (track_span) finds it sooner.
+                    span = (getattr(a, "track_span", None) or a.cfo_span) if v3 else 0
                     run_nid2 = (3 if nid2 is None else nid2) if v3 else nid2
                     if v3 and nid2 is None:
                         self.say(f"cell search on the chip: all N_ID2, CFO {cfo or 0:+.0f} +- {span} Hz")
@@ -350,6 +396,48 @@ class LiveSource(Source):
         return pci % 3, cfo
 
 
+class ScanSource(LiveSource):
+    """Cell scan started from the window: at each LO, full bursts searched on the PC over the whole
+    SSB raster (+-6.1 MHz), all N_ID2 and the CFO cfo_of(LO) +- --cfo-span (cell_scan.scan_lo).
+    Puts one {"kind": "scan"} event per LO with its cells. Shares the board handling of LiveSource."""
+
+    def __init__(self, args, out, pool, los, cfo_of, n_bursts: int = SCAN_BURSTS):
+        super().__init__(args, out, pool)
+        self.los, self.cfo_of, self.n_bursts = list(los), cfo_of, n_bursts
+
+    def work(self):
+        from .capture_bursts import _setup, pick_gain
+        from .cell_scan import scan_lo
+        from .esp_sdr import rate_code_for
+        a = self.args
+        rate = rate_code_for(a.rate * 1e6)
+        sdr, _ = self.open_board()
+        if sdr is None:
+            return
+        try:
+            for lo in self.los:
+                if self.stop_flag.is_set():
+                    return
+                gain = a.gain
+                if gain == "auto":
+                    gain, _ = pick_gain(sdr, lo, rate, 10, a)
+                gain = int(gain)
+                _setup(sdr, lo, a, gain)
+                c0 = self.cfo_of(lo)
+                self.say(f"scan LO {lo} MHz (gain {gain}): {self.n_bursts} bursts, CFO {c0 / 1e3:+.1f} +- "
+                         f"{a.cfo_span / 1e3:.0f} kHz")
+                cells = scan_lo(sdr, lo, rate, self.n_bursts, self.pool, c0, a.cfo_span, a.bits, say=self.say,
+                                stop=self.stop_flag.is_set)
+                if self.stop_flag.is_set():
+                    return
+                self.out.put({"kind": "scan", "lo": lo, "gain": gain, "cells": cells})
+        finally:
+            try:
+                sdr.close()
+            except Exception:
+                pass
+
+
 class ReplaySource(Source):
     def __init__(self, args, out, pool, busy):
         super().__init__(args, out, pool)
@@ -427,6 +515,10 @@ class App:
         self.hidden: set[int] = set(args.hide or [])  # PCIs not shown (kept over Start/Stop)
         self._skip_release = False
         self.dirty = False
+        self.run_id = 0                    # decode results of an earlier run (other channel) are dropped
+        self.clock_ppm = None              # the board's crystal from the last SFN timing fit (ppm)
+        self.found_cells: dict[str, tuple] = {}   # scan table row -> (LO, cell)
+        self.scan_bursts = SCAN_BURSTS
         self.reset_data()
 
         root.title("SSB live view (ESP32-C5)")
@@ -452,7 +544,7 @@ class App:
         side = ttk.Frame(root, padding=(6, 4), width=450)
         side.grid(row=1, column=1, sticky="ns")
         side.grid_propagate(False)
-        side.rowconfigure(3, weight=1)
+        side.rowconfigure(4, weight=1)
         mono = ("DejaVu Sans Mono", 9)
         st = ttk.LabelFrame(side, text="Stream", padding=4)
         st.grid(row=0, column=0, sticky="ew")
@@ -472,12 +564,15 @@ class App:
         self.cells.pack(fill="x")
         self.cells.bind("<ButtonRelease-1>", self.on_cell_click)
         self.cells.bind("<Double-Button-1>", self.on_cell_double)
+        self.cells.bind("<Button-3>", self.on_cell_menu)
         row = ttk.Frame(cf)
         row.pack(fill="x", pady=(3, 0))
         ttk.Button(row, text="Show all", command=self.show_all).pack(side="left")
-        ttk.Label(row, text="click: show/hide   double-click: only this", foreground="#555").pack(side="left", padx=8)
+        ttk.Label(row, text="click: show/hide  double: only this\nright-click: track this PCI on the chip",
+                  foreground="#555", justify="left").pack(side="left", padx=8)
+        self.build_channel_panel(side, row=3)
         lf = ttk.LabelFrame(side, text="Log", padding=4)
-        lf.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
+        lf.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
         self.log = tk.Text(lf, height=10, width=44, font=("DejaVu Sans Mono", 8), wrap="none")
         sb = ttk.Scrollbar(lf, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
@@ -531,10 +626,35 @@ class App:
         return (t_us - self.t_ref) / 1e6
 
     # ------------------------------------------------------------------ control
+    def drop_stale_events(self):
+        """Before a new stream or scan: the ended source's queued frames, logs and its 'stopped'
+        belong to the old channel. Scan results are kept for the table."""
+        keep = []
+        try:
+            while True:
+                ev = self.events.get_nowait()
+                if ev["kind"] == "scan":
+                    keep.append(ev)
+        except queue.Empty:
+            pass
+        for ev in keep:
+            self.events.put(ev)
+
     def start(self):
         if self.source and self.source.is_alive():
             return
+        self.drop_stale_events()
+        self.run_id += 1
         self.reset_data()
+        # the previous run's PCIs (another channel, perhaps): table rows, plotted points, MIB panel
+        for iid in self.cells.get_children():
+            self.cells.delete(iid)
+        for d in (self.cfo_pts, self.tim_pts, self.snr_ok, self.snr_bad):
+            for art in d.values():
+                art.remove()
+            d.clear()
+        self.mib_text.set("-")
+        self.dirty = True
         self.log.delete("1.0", "end")
         busy = lambda: self.inflight + self.events.qsize() >= MAX_BACKLOG  # noqa: E731
         self.source = (ReplaySource(self.args, self.events, self.pool, busy) if self.args.replay
@@ -603,9 +723,13 @@ class App:
                     self.add_log(ev["text"])
                 elif k == "error":
                     self.add_log("ERROR " + ev["text"])
+                elif k == "scan":
+                    self.on_scan(ev)
                 elif k == "stopped":
                     self.btn_start.configure(state="normal")
                     self.btn_stop.configure(state="disabled")
+                    if isinstance(self.source, ScanSource):
+                        self.add_log(f"scan finished: {len(self.found_cells)} cells; double-click one to track it")
         except queue.Empty:
             pass
         try:
@@ -655,6 +779,7 @@ class App:
         job = {k: ev.get(k) for k in ("iq", "fs", "t_pss", "nid2", "cfo", "f_ssb", "f_lo", "t_first_us", "seq", "mode", "stat",
                                       "R", "cfo_ddc", "pci_chip", "scale")}
         job["epoch"] = self.epoch
+        job["run"] = self.run_id
         with self.lock:
             self.inflight += 1
         self.pool.submit(decode_job, job).add_done_callback(self.on_done)
@@ -669,6 +794,8 @@ class App:
             self.inflight -= 1
 
     def on_result(self, r):
+        if r.get("run") is not None and r["run"] != self.run_id:
+            return                                     # decoded after a channel switch: other cell
         self.decode_ms.append(r["decode_ms"])
         if r.get("pci") is None:
             return
@@ -763,6 +890,178 @@ class App:
 
     def show_all(self):
         self.set_hidden(set())
+
+    def on_cell_menu(self, event):
+        iid = self.cells.identify_row(event.y)
+        if not iid:
+            return
+        pci = int(iid)
+        m = self.tk.Menu(self.root, tearoff=0)
+        live = not self.args.replay
+        m.add_command(label=f"Track PCI {pci} on the chip (N_ID2 {pci % 3})", command=lambda: self.track_cell(pci),
+                      state="normal" if live else "disabled")
+        m.add_command(label=f"Show only PCI {pci}", command=lambda: self.set_hidden(set(self.series) - {pci}))
+        m.tk_popup(event.x_root, event.y_root)
+
+    def track_cell(self, pci: int):
+        """The chip follows one N_ID2: switch it to this PCI's (e.g. the other sector of a site,
+        seen through the PC's extra N_ID2 tries) at the same LO and SSB, from its measured CFO."""
+        s = self.series.get(pci)
+        okc = [c for c, o in zip(s["cfo"], s["ok"]) if o] if s else []
+        cfo = float(np.median(okc)) * 1e3 if okc else None
+        lo = int(round(self.cfg.get("f_lo", self.args.freq * 1e6) / 1e6))
+        ssb = round(self.cfg.get("f_ssb", float(self.args.ssb) * 1e6) / 1e6, 3)
+        self.track(lo, ssb, nid2=pci % 3, cfo=cfo, what=f"PCI {pci}")
+
+    # ------------------------------------------------------------------ channel selection
+    def build_channel_panel(self, parent, row: int):
+        """LO / SSB entry with Track, a scan over LOs, and the table of cells found (double-click:
+        track that cell). Live mode only: the board has one receiver, so a scan or a new channel
+        first stops the running stream."""
+        tk, ttk = self.tk, self.ttk
+        a = self.args
+        ch = ttk.LabelFrame(parent, text="Channel", padding=4)
+        ch.grid(row=row, column=0, sticky="ew", pady=(6, 0))
+        r1 = ttk.Frame(ch)
+        r1.pack(fill="x")
+        self.v_lo = tk.StringVar(value=str(a.freq or ""))
+        self.v_ssb = tk.StringVar(value="auto" if a.ssb in (None, "auto") else f"{float(a.ssb):g}")
+        ttk.Label(r1, text="LO").pack(side="left")
+        e_lo = ttk.Entry(r1, textvariable=self.v_lo, width=6)
+        e_lo.pack(side="left", padx=(3, 2))
+        ttk.Label(r1, text="MHz  SSB").pack(side="left")
+        e_ssb = ttk.Entry(r1, textvariable=self.v_ssb, width=9)
+        e_ssb.pack(side="left", padx=(3, 2))
+        ttk.Label(r1, text="MHz").pack(side="left")
+        self.btn_track = ttk.Button(r1, text="Track", command=self.track_entry, width=7)
+        self.btn_track.pack(side="right")
+        r2 = ttk.Frame(ch)
+        r2.pack(fill="x", pady=(3, 0))
+        ttk.Label(r2, text="Scan LOs").pack(side="left")
+        self.v_scan = tk.StringVar(value=str(a.freq or "2131"))
+        e_scan = ttk.Entry(r2, textvariable=self.v_scan, width=24)
+        e_scan.pack(side="left", padx=(3, 2))
+        self.btn_scan = ttk.Button(r2, text="Scan", command=self.scan_entry, width=7)
+        self.btn_scan.pack(side="right")
+        cols = ("band", "lo", "ssb", "pci", "mibs", "snr", "cfo")
+        self.found = ttk.Treeview(ch, columns=cols, show="headings", height=4, selectmode="browse")
+        for c, w, t in zip(cols, (52, 44, 72, 40, 50, 55, 62), ("Band", "LO", "SSB MHz", "PCI", "MIBs", "SNR dB", "CFO kHz")):
+            self.found.heading(c, text=t)
+            self.found.column(c, width=w, anchor="e")
+        self.found.pack(fill="x", pady=(3, 0))
+        self.found.bind("<Double-Button-1>", self.on_found_double)
+        hint = ("double-click a cell to track it   (LOs: 2131 2670 or 2175-2715/15)" if not a.replay
+                else "replay: no board to tune")
+        ttk.Label(ch, text=hint, foreground="#555").pack(anchor="w", pady=(2, 0))
+        e_lo.bind("<Return>", lambda _e: self.track_entry())
+        e_ssb.bind("<Return>", lambda _e: self.track_entry())
+        e_scan.bind("<Return>", lambda _e: self.scan_entry())
+        if a.replay:
+            for w in (e_lo, e_ssb, e_scan, self.btn_track, self.btn_scan):
+                w.configure(state="disabled")
+
+    def cfo_guess(self, f_mhz: float):
+        """CFO (Hz) the board's crystal causes at f_mhz, from the last timing fit; None if unknown."""
+        return None if self.clock_ppm is None else -self.clock_ppm * f_mhz
+
+    def after_stop(self, fn):
+        """Stop the running stream or scan, then call fn once its thread has ended (one serial port)."""
+        if self.source and self.source.is_alive():
+            self.source.stop_flag.set()
+            self.btn_stop.configure(state="disabled")
+            self.root.after(150, lambda: self.after_stop(fn))
+            return
+        fn()
+
+    def track(self, lo: int, ssb, nid2: int | None = None, cfo: float | None = None, what: str = ""):
+        """Retune to a channel and restart the stream. ssb: SSB centre in MHz or 'auto' (raster scan
+        at this LO first). With nid2 and cfo from a scan, the chip searches only that N_ID2 and +-10 kHz."""
+        a = self.args
+        a.freq, a.ssb, a.nid2 = int(lo), ssb, nid2
+        guess = self.cfo_guess(lo if ssb == "auto" else ssb)
+        a.cfo = cfo if cfo is not None else guess
+        a.track_span = 10000 if cfo is not None else None
+        self.v_lo.set(str(a.freq))
+        self.v_ssb.set("auto" if ssb == "auto" else f"{float(ssb):g}")
+        self.src_text.set(self.describe_args())
+        self.hidden = set()
+        note = (f"channel: LO {a.freq} MHz, SSB {ssb if ssb == 'auto' else f'{float(ssb):.3f}'} MHz"
+                + (f" ({nr_band(float(ssb))})" if ssb != "auto" else "") + (f", {what}" if what else "")
+                + (f", N_ID2 {nid2}" if nid2 is not None else "")
+                + (f", CFO {a.cfo / 1e3:+.2f} kHz" + (" (from the crystal)" if cfo is None else "") if a.cfo is not None else ""))
+
+        def go():
+            self.start()
+            self.add_log(note)
+        self.after_stop(go)
+
+    def track_entry(self):
+        try:
+            lo = int(float(self.v_lo.get()))
+            s = self.v_ssb.get().strip().lower()
+            ssb = "auto" if s in ("", "auto") else float(s)
+            if ssb != "auto":
+                new = lo_for_ssb(ssb, lo)
+                if new != lo:
+                    self.add_log(f"SSB {ssb} MHz is not within 2-{SSB_HALF_SPAN_MHZ} MHz of LO {lo} MHz: using LO {new} MHz")
+                    lo = new
+            elif not lo_tunable(lo):
+                raise ValueError(f"LO {lo} MHz: the C5 tunes {C5_TUNE_MHZ[0]} and {C5_TUNE_MHZ[1]} MHz")
+        except ValueError as e:
+            self.add_log(f"channel: {e}")
+            return
+        self.track(lo, ssb)
+
+    def scan_entry(self):
+        try:
+            los = parse_los(self.v_scan.get())
+        except ValueError:
+            self.add_log("scan: give LOs in MHz, e.g. 2131 2670 or 2175-2715/15")
+            return
+        bad = [lo for lo in los if not lo_tunable(lo)]
+        los = [lo for lo in los if lo_tunable(lo)]
+        if bad:
+            self.add_log(f"scan: skipping {bad} (the C5 tunes {C5_TUNE_MHZ[0]} and {C5_TUNE_MHZ[1]} MHz)")
+        if not los:
+            return
+        for iid in self.found.get_children():
+            self.found.delete(iid)
+        self.found_cells.clear()
+        cfo_of = lambda lo: self.cfo_guess(lo) or 0.0       # noqa: E731
+
+        def go():
+            self.drop_stale_events()
+            self.source = ScanSource(self.args, self.events, self.pool, los, cfo_of, self.scan_bursts)
+            self.source.start()
+            self.btn_start.configure(state="disabled")
+            self.btn_stop.configure(state="normal")
+            self.add_log(f"scan: {len(los)} LOs, {self.scan_bursts} bursts each"
+                         + (f", CFO centred on the crystal ({self.clock_ppm:+.2f} ppm)" if self.clock_ppm is not None else ""))
+        self.after_stop(go)
+
+    def on_scan(self, ev):
+        lo = ev["lo"]
+        if not ev["cells"]:
+            self.add_log(f"scan LO {lo} MHz: no cell")
+        for c in ev["cells"]:
+            iid = f"{lo}_{c['f_ssb_mhz']:.3f}_{c['pci']}"
+            cfo = f"{c['cfo_hz'] / 1e3:+.2f}" if c.get("cfo_hz") is not None else "-"
+            vals = (nr_band(c["f_ssb_mhz"]), lo, f"{c['f_ssb_mhz']:.3f}", c["pci"], f"{c['mibs']}/{c['ssbs']}",
+                    f"{c['snr_db']:+.1f}", cfo)
+            if self.found.exists(iid):
+                self.found.item(iid, values=vals)
+            else:
+                self.found.insert("", "end", iid=iid, values=vals)
+            self.found_cells[iid] = (lo, c)
+            self.add_log(f"scan LO {lo} MHz: PCI {c['pci']} at {c['f_ssb_mhz']:.3f} MHz ({nr_band(c['f_ssb_mhz'])}), "
+                         f"{c['mibs']} MIBs of {c['ssbs']} SSBs, SNR {c['snr_db']:+.1f} dB")
+
+    def on_found_double(self, event):
+        iid = self.found.identify_row(event.y)
+        if iid not in self.found_cells:
+            return
+        lo, c = self.found_cells[iid]
+        self.track(lo, round(c["f_ssb_mhz"], 3), nid2=c["pci"] % 3, cfo=c.get("cfo_hz"), what=f"PCI {c['pci']}")
 
     def update_status(self):
         now = time.monotonic()
@@ -942,6 +1241,8 @@ class App:
                 self.tim_pts[pci].set_data(tr, rr)
                 if pci == main:
                     # the board's clock against the gNB's: its rate gives the CFO the crystal should cause
+                    if len(s["tf"]) >= 20:
+                        self.clock_ppm = float(ppm_now)        # centres the CFO search on other channels
                     exp = -ppm_now * 1e-6 * self.cfg.get("f_ssb", 0) / 1e3
                     cf = np.array(s["cfo"])[np.array(s["ok"], bool)][-50:]
                     self.tim_note.set_text(f"PCI {pci}: {rms:.2f} µs RMS after a quadratic fit\n"

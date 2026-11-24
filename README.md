@@ -31,7 +31,8 @@ It is receive-only, and it decodes only the broadcast signals every phone reads 
 - **A live view** (`capture/ssb_live.py`):
   - plays a session from the board or a recording;
   - finds the cell by itself (`--ssb auto`), recovers from board resets, can record;
-  - shows several cells at once, each of which can be shown or hidden.
+  - shows several cells at once, each of which can be shown or hidden;
+  - selects the channel in the window: scan a list of LOs, double-click a found cell to track it, or switch the chip to another sector of the same site.
 - **A reference detector in MATLAB** (`matlab/ssb_detect.m`, 5G Toolbox): it searches the whole GSCN raster, both subcarrier spacings (15/30 kHz) and L_max 4/8. It also sums SSS statistics over bursts, to find weak cells.
 - **A cell scanner** (`capture/cell_scan.py`): every NR cell on the raster around one or more LOs, as a table with PCI, SNR, RSRP, CFO and MIB.
 - **A headless monitor** (`capture/ssb_monitor.py`): every decoded SSB as JSON, CSV or UDP, with alerts for new PCIs, MIB changes, SFN or timing jumps and frequency outliers.
