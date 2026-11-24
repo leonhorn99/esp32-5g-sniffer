@@ -55,15 +55,40 @@ Both negate Q as the firmware sends −Q.
 ## Cell scanner
 
 ```bash
-.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2131 2670             # 60 bursts per LO
-.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2595 --scs 30 --lmax 8  # TDD bands
+.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2131 2670             # two LOs
+.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2g 5g                 # the C5's whole range, 152 LOs
+.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2580-2610 --scs 30    # only 30 kHz SSBs
 .venv_local/bin/python -m capture.cell_scan --session data/<plain burst session> --ppm -3.1     # offline
 ```
 
-**What it does at each LO:**
-1. Captures full bursts.
-2. Searches every GSCN position within ±6.1 MHz, all N_ID2, and the CFO `--cfo` ± `--cfo-span` (or −`--ppm` × f) in 5 kHz steps, with `nr_ssb.pss_search_raster` (about 0.3 s per burst).
-3. Decodes SSS, PBCH and MIB.
+`--freq` takes LOs in whole MHz, ranges (`2175-2715/12`, step 12 MHz if omitted) and `2g` / `5g`: the C5's whole 2130–2730 and 4790–5990 MHz in 12 MHz steps. Each LO covers SSB centres within ±6.1 MHz, so 12 MHz steps leave no gap.
+
+**What it does at each LO** (`cell_scan.sweep`):
+1. **Gain:** auto (the highest gain index without clipping) or `--gain`.
+2. **Bursts, timed on the board's clock** (`capture_lo`):
+   - An SSB of a 20 ms-periodic cell can start anywhere in the period. A burst (1.64 ms) holds it whole only if it starts in a 1.3 ms window.
+   - So the scanner keeps a map of the start times each burst covered, delays every further burst (0–20 ms) to land on the longest stretch still missing, and stops when every start time was covered `--looks` times (default 2, at most `--bursts`, default 100).
+   - On the board (24 Nov), 2 looks took 47 bursts per LO in the median (41–65), about 5.5 s with the gain scan. A simulation with the burst spacings of the 23/24 Nov surveys (94 ms, mostly within ±1 ms) gave 58, and 89 for untimed bursts.
+   - The old fixed 60 untimed bursts covered only 85–97 % of the period at some LOs of the 24 Nov survey, so a cell with a single beam could be missed.
+3. **The search:** every GSCN position within ±6.1 MHz, all N_ID2, in 5 kHz CFO steps (10 kHz for 30 kHz SSBs), with `nr_ssb.pss_search_raster`; then SSS, PBCH and MIB.
+4. **SSB numerologies per LO** (`ssb_cases`):
+   - 15 kHz case A (L_max 4) below 3 GHz;
+   - 30 kHz case C (L_max 8) as well where a TDD band lies within the LO's span (n40 2300–2400, n53/n41/n38 2483.5–2690 MHz);
+   - only 30 kHz case C at 5 GHz (n46, n79).
+   - `--scs 15|30` forces one for every LO.
+5. **CFO window** (`cfo_window`):
+   - Without `--ppm`: around 0, ±12 ppm (at least `--cfo-span`, 30 kHz), because the crystal has been seen anywhere from −7.3 to +2.9 ppm.
+   - The first decoded cell measures the crystal; after that, each LO searches ±2 ppm around it (3 CFO steps instead of 13). `--cfo` fixes the window for all LOs.
+6. **Overlap:** the PC searches one LO's bursts while the board captures the next.
+
+**Time:**
+- **Measured on the board** (24 Nov, 2 looks, auto gain, 2 decoder processes): `2g 5g` took 14.1 min, of which the 2 GHz part took 6.0 min.
+- **Estimate for `5g` alone:** about 9 min (`sweep_eta_s`, fitted to that run).
+- **Bottleneck:** the 2 GHz part is limited by the PC search (15 and 30 kHz in the TDD bands), the 5 GHz part by the capture.
+
+**Limit:** 2 looks give every SSB about two chances. A weak cell next to a strong one can be missed. On 24 Nov this happened to PCI 166 (−4.4 dB), the sector next to PCI 165, which 100 untimed bursts had found. Tracking PCI 165 shows PCI 166 as well (the PC tries the other N_ID2 on every cut), or use 3–4 looks.
+
+**PC load:** with the crystal known, one burst takes 127 ms of one core at 2 GHz, plus 273 ms for 30 kHz in the TDD bands, and 80 ms at 5 GHz. Two decoder processes keep up with the board.
 
 **What it prints:** a table of cells: SSB frequency, GSCN, PCI, SSBs, MIBs, SNR, RSRP, CFO, SSB indices and the main MIB fields. It writes the table as JSON (`results/cells_<time>.json`); `--record` keeps the bursts.
 
@@ -102,8 +127,13 @@ Every cut is decoded in a separate process. It is also tried with the other two 
   - CFO of the decoded SSBs, with the chip's own estimate and the CFO the measured clock rate implies;
   - SFN-anchored frame timing with a quadratic clock fit, plus the clock error now (ppm) and its change per minute;
   - SNR (o MIB decoded, x failed).
-- **Side panel, in three tabs:**
+- **Side panel, in four tabs:**
   - **Cell:** stream counters (including board losses), the latest MIB fields with RSRP (dBFS, not calibrated) and the chip's PCI, the cell table;
+  - **MIB:** the MIB of up to three cells side by side, every field in words (`capture/nr_mib.py`):
+    - Raw fields: the number of MIBs and whether the content ever changed, SFN, half frame, SSB indices, subcarrier spacing, k_SSB, DM-RS position, cellBarred, intraFreqReselection.
+    - Computed from `pdcch-ConfigSIB1` (TS 38.213 V17.14.0, Tables 13-1 and 13-11, 15 kHz): whether SIB1 is announced, the size and frequency band of CORESET#0, and the slots and symbol where the PDCCH for SIB1 is sent.
+    - Click a row for what it means.
+    - Below the table: cells with the same SSB frequency and MIB (most likely sectors of one site), and which cells announce SIB1. A change of a cell's MIB is logged.
   - **Channel:** see below;
   - **Log.**
   - A line below the tabs shows the latest message.
@@ -113,10 +143,15 @@ Every cut is decoded in a separate process. It is also tried with the other two 
 - Click a row of the cell table to show or hide a PCI, double-click to show only it, "Show all" to undo; `--hide 165` starts with PCIs hidden.
 - **Channel panel** (live only):
   - **Track:** retunes the board to the LO and SSB frequency typed in. SSB "auto" scans the raster at that LO first. An SSB more than 6.1 MHz from the LO (or within 2 MHz of it) moves the LO next to the SSB.
-  - **Scan:** searches the whole SSB raster at a list of LOs (`2131 2670`, or a range `2175-2715/15`) with 100 bursts each (about 15 s per LO), like `cell_scan`. The table lists band, LO, SSB frequency, PCI, MIBs, SNR and CFO of every cell found.
-  - **Double-click a found cell** to track it: LO, SSB, N_ID2 and CFO come from the scan, so the chip searches only that N_ID2 within ±10 kHz and locks on within seconds.
+  - **Scan:** searches the whole SSB raster at a list of LOs, like `cell_scan`.
+    - The LO list: `2131 2670`, a range `2175-2715/12`, or `2g` / `5g` / `2g 5g` (in the drop-down) for the C5's whole range.
+    - "looks per SSB" (1–4, default 2) sets how often every SSB position of the 20 ms period must be covered at each LO.
+    - Next to it the window shows the number of LOs and the estimated time, e.g. "152 LOs, about 14 min".
+    - The line below the tabs shows the progress ("LO 41/152, 4 cells, about 12 min left"); Stop ends the scan.
+    - The table lists band (with "30k" for 30 kHz SSBs), LO, SSB frequency, PCI, MIBs, SNR and CFO of every cell found.
+  - **Double-click a found cell** to track it: LO, SSB, N_ID2 and CFO come from the scan, so the chip searches only that N_ID2 within ±10 kHz and locks on within seconds. Cells with 30 kHz SSBs cannot be tracked: the chip's detector and the live decoder handle 15 kHz only.
   - **Right-click a PCI in the cell table** → "Track PCI … on the chip". This switches the chip to that PCI's N_ID2 at the same frequency, e.g. to the other sector of a site, which the PC decodes from the same cuts.
-  - **CFO centring:** once the SFN timing has measured the board's crystal (ppm), scans and new channels centre their CFO search on it. That matters at 5–6 GHz, where a few ppm are tens of kHz.
+  - **CFO centring:** once the SFN timing or a decoded cell of a scan has measured the board's crystal (ppm), scans and new channels centre their CFO search on it (scans: ±2 ppm instead of ±12 ppm). That matters at 5–6 GHz, where a few ppm are tens of kHz.
   - A switch stops the running stream (one board, one receiver), starts a new run (new session with `--record`) and clears the plots.
 - **Tested on the board (24 Nov):**
   - scan of 2131 and 2670 MHz, then a double-click on PCI 317 (n7): 95 MIBs from 96 SSBs, 4.7 s after the click;
@@ -216,6 +251,7 @@ Options:
 |---|---|
 | `ssb_detect(x, fs, 'fLO', f, ...)` | one burst: GSCN search, PSS over CFO hypotheses, SSS, CFO refinement with the TS 38.211 symbol phase removed (`SymbolPhase`), DM-RS, PBCH, BCH; options `fSSB`, `SubcarrierSpacing`, `Lmax`, `CFOCenter`, `CFOMax`, `KeepTrace` |
 | `detect_session(folder, ...)` | the above over a session, summary by cell |
+| `sib1_offline(folder, 'FreqMHz', lo, 'SSBMHz', f, 'PCI', p)` | SIB1 of one cell from a session of full bursts: the bursts with its MIB fit the cell's frame clock on the board's clock; the slots of the SIB1 control channel (from `pdcch-ConfigSIB1`) that lie whole in a burst are demodulated over CORESET#0; blind PDCCH decoding with the SI-RNTI, DCI format 1_0, then PDSCH and DL-SCH (5G Toolbox). Writes `results/sib1_<session>_<PCI>.mat/.json` (the decoded SIB1 as hex) |
 | `sim_ssb_detection` | Monte Carlo of detection and MIB decoding against SNR (AWGN, C5 receiver model) |
 | `ssb_test_waveform`, `c5_rx_model` | SSB-only test signal with ground truth (`CarrierFrequency` adds the RF symbol phase a real gNB applies); simulated C5 capture |
 | `make_n310_ssb_waveform` | SSB and CW files for a cabled test with a USRP (sensitivity in dBm). **Cable and attenuators only.** |

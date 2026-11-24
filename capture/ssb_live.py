@@ -16,10 +16,14 @@ Replay: an SSBDET session (cuts with the chip's PSS positions) or a session of p
 (searched for PSS on the PC; give --ssb if the session does not name the SSB frequency).
 
 Channel panel (live): type an LO and an SSB frequency (or 'auto') and press Track; or Scan a list
-of LOs ('2131 2670', '2175-2715/15'): full bursts at each LO are searched over the whole SSB
-raster on the PC (capture/cell_scan.py), and a double-click on a found cell tracks it (LO, SSB,
-N_ID2 and CFO from the scan). Once the SFN timing has measured the board's crystal, scans and
-new channels centre their CFO search on it.
+of LOs ('2131 2670', '2175-2715/12', or '2g 5g' for the C5's whole 2.13-2.73 and 4.79-5.99 GHz
+in 12 MHz steps): full bursts at each LO, timed until every SSB position of a 20 ms period was
+seen 'looks per SSB' times, are searched over the whole SSB raster on the PC
+(capture/cell_scan.py: 15 kHz SSBs below 3 GHz, 30 kHz near TDD bands and at 5 GHz), and a
+double-click on a found 15 kHz cell tracks it (LO, SSB, N_ID2 and CFO from the scan). The window
+shows the scan's estimated duration (both ranges with 2 looks: 14 min on the board). Once
+the SFN timing or a decoded cell of the scan has measured the board's crystal, scans and new
+channels centre their CFO search on it (+-2 ppm instead of +-12 ppm).
 
 Decoding runs in a separate process. When it falls behind in live mode, cuts are counted
 as skipped instead of queued, so the view stays current.
@@ -33,11 +37,13 @@ import os
 import queue
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
+
+from .nr_mib import FIELDS as MIB_FIELDS, HELP as MIB_HELP, content_key, describe as describe_mib
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BACKLOG = 16           # decode jobs in flight before live cuts are skipped (covers one redraw)
@@ -49,7 +55,10 @@ PCI_COLORS = ("#2a6fdb", "#e07b00", "#1a9e5a", "#b23a9a", "#7a6a00", "#5a5a5a")
 SYM_COLORS = ("#2a6fdb", "#e07b00", "#1a9e5a", "#b23a9a")    # sent QPSK symbol (+,+) (+,-) (-,+) (-,-)
 C5_TUNE_MHZ = ((2130, 2730), (4790, 5990))   # LOs the C5 tunes exactly (docs/hardware.md)
 SSB_HALF_SPAN_MHZ = 6.1                      # SSB centre at most this far from the LO (cell_scan.HALF_SPAN_HZ)
-SCAN_BURSTS = 100                            # full bursts per LO for a scan from the window (about 7 SSB hits of a 20 ms cell)
+SCAN_BURSTS = 100                            # full bursts per LO at most for a scan from the window
+SCAN_LOOKS = 2                               # ... timed until every SSB position of a 20 ms period was seen twice (cell_scan.capture_lo)
+SCAN_LO_STEP = 12                            # MHz between scan LOs: SSB centres +-6.1 MHz around each, without gaps
+SWEEPS = {"2g": C5_TUNE_MHZ[0], "5g": C5_TUNE_MHZ[1]}   # the C5's whole ranges, for parse_los
 # NR downlink ranges inside the C5's tuning ranges (TS 38.101-1); n7 and n41 overlap
 NR_BANDS = (("n1", 2110, 2170), ("n40", 2300, 2400), ("n41", 2496, 2690), ("n38", 2570, 2620), ("n7", 2620, 2690),
             ("n79", 4400, 5000), ("n46", 5150, 5925), ("n47", 5855, 5925))
@@ -65,13 +74,17 @@ def lo_tunable(lo_mhz: int) -> bool:
 
 
 def parse_los(text: str) -> list[int]:
-    """LOs in whole MHz from '2131 2670', '2131, 2670' or ranges '2175-2715/15' (step 15 if omitted)."""
+    """LOs in whole MHz from '2131 2670', '2131, 2670', ranges '2175-2715/15' (step 12 if omitted), or
+    '2g' / '5g' for the C5's whole 2130-2730 / 4790-5990 MHz in 12 MHz steps."""
     out: list[int] = []
-    for tok in text.replace(",", " ").split():
-        if "-" in tok:
+    for tok in text.replace(",", " ").lower().split():
+        if tok in SWEEPS:
+            a, b = SWEEPS[tok]
+            out += list(range(a, b + 1, SCAN_LO_STEP))
+        elif "-" in tok:
             rng, _, step = tok.partition("/")
             a, b = (int(float(v)) for v in rng.split("-", 1))
-            out += list(range(a, b + 1, int(step or 15)))
+            out += list(range(a, b + 1, int(step or SCAN_LO_STEP)))
         else:
             out.append(int(float(tok)))
     return out
@@ -229,7 +242,7 @@ class LiveSource(Source):
                         self.say(f"cell scan: all GSCN positions within +-6.1 MHz of {a.freq} MHz, "
                                  f"{a.scan_bursts} bursts, CFO {cfo or 0:+.0f} +- {a.cfo_span} Hz")
                         cells = scan_lo(sdr, a.freq, rate, a.scan_bursts, self.pool, cfo or 0, a.cfo_span,
-                                        say=self.say, stop=self.stop_flag.is_set)
+                                        say=self.say, stop=self.stop_flag.is_set, looks=SCAN_LOOKS)
                         if self.stop_flag.is_set():
                             return
                         if not cells:
@@ -397,40 +410,31 @@ class LiveSource(Source):
 
 
 class ScanSource(LiveSource):
-    """Cell scan started from the window: at each LO, full bursts searched on the PC over the whole
-    SSB raster (+-6.1 MHz), all N_ID2 and the CFO cfo_of(LO) +- --cfo-span (cell_scan.scan_lo).
-    Puts one {"kind": "scan"} event per LO with its cells. Shares the board handling of LiveSource."""
+    """Cell scan started from the window (cell_scan.sweep): at each LO, full bursts timed until every
+    SSB position of a 20 ms period was seen `looks` times, searched on the PC over the whole SSB raster
+    (+-6.1 MHz), all N_ID2, the SSB numerologies of the band, and a CFO window around the crystal
+    (narrowed once a decoded cell has measured it). Puts one {"kind": "scan"} event per LO with its
+    cells and the crystal. Shares the board handling of LiveSource."""
 
-    def __init__(self, args, out, pool, los, cfo_of, n_bursts: int = SCAN_BURSTS):
+    def __init__(self, args, out, pool, los, ppm=None, looks: int | None = SCAN_LOOKS, n_bursts: int = SCAN_BURSTS):
         super().__init__(args, out, pool)
-        self.los, self.cfo_of, self.n_bursts = list(los), cfo_of, n_bursts
+        self.los, self.ppm, self.looks, self.n_bursts = list(los), ppm, looks, n_bursts
 
     def work(self):
-        from .capture_bursts import _setup, pick_gain
-        from .cell_scan import scan_lo
+        from .cell_scan import sweep
         from .esp_sdr import rate_code_for
         a = self.args
         rate = rate_code_for(a.rate * 1e6)
         sdr, _ = self.open_board()
         if sdr is None:
             return
+        t0, n = time.monotonic(), len(self.los)
         try:
-            for lo in self.los:
-                if self.stop_flag.is_set():
-                    return
-                gain = a.gain
-                if gain == "auto":
-                    gain, _ = pick_gain(sdr, lo, rate, 10, a)
-                gain = int(gain)
-                _setup(sdr, lo, a, gain)
-                c0 = self.cfo_of(lo)
-                self.say(f"scan LO {lo} MHz (gain {gain}): {self.n_bursts} bursts, CFO {c0 / 1e3:+.1f} +- "
-                         f"{a.cfo_span / 1e3:.0f} kHz")
-                cells = scan_lo(sdr, lo, rate, self.n_bursts, self.pool, c0, a.cfo_span, a.bits, say=self.say,
-                                stop=self.stop_flag.is_set)
-                if self.stop_flag.is_set():
-                    return
-                self.out.put({"kind": "scan", "lo": lo, "gain": gain, "cells": cells})
+            for r in sweep(sdr, self.los, rate, self.pool, a, ppm=self.ppm, looks=self.looks, max_bursts=self.n_bursts,
+                           say=lambda _t: None, stop=self.stop_flag.is_set, cfo_span=a.cfo_span):
+                done = r["index"] + 1
+                left = (time.monotonic() - t0) / done * (n - done)
+                self.out.put({"kind": "scan", **r, "n": n, "left_s": left})
         finally:
             try:
                 sdr.close()
@@ -549,11 +553,12 @@ class App:
         side.rowconfigure(0, weight=1)
         self.tabs = ttk.Notebook(side)
         self.tabs.grid(row=0, column=0, sticky="nsew")
-        tab_cell, tab_ch, tab_log = (ttk.Frame(self.tabs, padding=4) for _ in range(3))
+        tab_cell, tab_mib, tab_ch, tab_log = (ttk.Frame(self.tabs, padding=4) for _ in range(4))
         self.tabs.add(tab_cell, text="Cell")
+        self.tabs.add(tab_mib, text="MIB")
         self.tabs.add(tab_ch, text="Channel")
         self.tabs.add(tab_log, text="Log")
-        self.tab_cell, self.tab_ch, self.tab_log = tab_cell, tab_ch, tab_log
+        self.tab_cell, self.tab_mib, self.tab_ch, self.tab_log = tab_cell, tab_mib, tab_ch, tab_log
         self.ticker = tk.StringVar(value="")          # the latest message, below the tabs
         ttk.Label(side, textvariable=self.ticker, foreground="#555", width=1).grid(row=1, column=0, sticky="ew",
                                                                                   pady=(4, 0))
@@ -581,6 +586,7 @@ class App:
         ttk.Button(row, text="Show all", command=self.show_all).pack(side="left")
         ttk.Label(row, text="click: show/hide  double: only this\nright-click: track this PCI on the chip",
                   foreground="#555", justify="left").pack(side="left", padx=8)
+        self.build_mib_panel(tab_mib)
         self.build_channel_panel(tab_ch)
         self.log = tk.Text(tab_log, height=10, width=44, font=("DejaVu Sans Mono", 8), wrap="none")
         sb = ttk.Scrollbar(tab_log, command=self.log.yview)
@@ -614,6 +620,8 @@ class App:
         self.chip = {"t": deque(maxlen=5000), "cfo": deque(maxlen=5000)}
         self.last: dict[int, deque] = {}             # latest decoded results per PCI (grid etc.)
         self.mib_text_by_pci: dict[int, tuple] = {}  # (arrival, text) of the latest MIB per PCI
+        self.mib_info: dict[int, dict] = {}          # per PCI: MIB count, content changes, SSB indices (MIB tab)
+        self.mib_dirty = True
         self.arrival = 0
         self.grid_pow: dict[int, deque] = {}         # |Y|^2 / noise of the last 25 SSBs per PCI
         self.colors: dict[int, str] = {}
@@ -669,6 +677,7 @@ class App:
                 art.remove()
             d.clear()
         self.mib_text.set("-")
+        self.mib_dirty = True
         self.dirty = True
         self.log.delete("1.0", "end")
         busy = lambda: self.inflight + self.events.qsize() >= MAX_BACKLOG  # noqa: E731
@@ -838,6 +847,16 @@ class App:
                 s["tf"].append(r["t_frame_us"])
                 s["sfn"].append(m["sfn"])
                 s["tfr"].append(t)
+            info = self.mib_info.setdefault(pci, {"n": 0, "key": None, "changes": 0, "issb": Counter(), "mib": None,
+                                                  "f_ssb": None})
+            key = content_key(m)
+            if info["key"] is not None and key != info["key"]:
+                info["changes"] += 1
+                self.add_log(f"PCI {pci}: MIB content changed (other than SFN): the cell was reconfigured")
+            info["n"] += 1
+            info["key"], info["mib"], info["f_ssb"] = key, m, self.cfg.get("f_ssb")
+            info["issb"][r["issb"]] += 1
+            self.mib_dirty = True
             self.mib_text_by_pci[pci] = (self.arrival,
                 f"PCI {pci}   SSB index {r['issb']}   half frame {m['hrf']}\n"
                 f"SFN {m['sfn']:4d}         t = {t:8.3f} s\n"
@@ -881,6 +900,66 @@ class App:
     def update_mib_panel(self):
         shown = [v for p, v in self.mib_text_by_pci.items() if p not in self.hidden]
         self.mib_text.set(max(shown)[1] if shown else "-")
+
+    MIB_COLS = 3                                     # cells side by side in the MIB tab
+
+    def build_mib_panel(self, parent):
+        """The MIB of up to three cells side by side, every field in words (capture/nr_mib.py): click a
+        row for what it means. Below, what follows from it (sectors of one site, reconfigurations)."""
+        tk, ttk = self.tk, self.ttk
+        f = ttk.LabelFrame(parent, text="MIB per cell (read from the PBCH)", padding=4)
+        f.pack(fill="both", expand=True)
+        cols = ("field",) + tuple(f"c{j}" for j in range(self.MIB_COLS))
+        self.mib_tree = ttk.Treeview(f, columns=cols, show="headings", height=len(MIB_FIELDS), selectmode="browse")
+        self.fit_columns(self.mib_tree, ("Field",) + ("PCI 1007",) * self.MIB_COLS,
+                         ("subCarrierSpacingCommon",) + ("2120.68-2129.32",) * self.MIB_COLS)
+        self.mib_tree.column("field", anchor="w")
+        for j in range(self.MIB_COLS):
+            self.mib_tree.heading(f"c{j}", text="")
+        for k, label, _ in MIB_FIELDS:
+            self.mib_tree.insert("", "end", iid=k, values=(label,) + ("",) * self.MIB_COLS)
+        self.mib_tree.pack(fill="x")
+        self.mib_tree.bind("<<TreeviewSelect>>", self.on_mib_select)
+        wrap = sum(int(self.mib_tree.column(c, "width")) for c in cols)
+        self.mib_help = tk.StringVar(value="Click a row to see what it means.")
+        ttk.Label(f, textvariable=self.mib_help, wraplength=wrap, justify="left").pack(fill="x", pady=(6, 0))
+        self.mib_notes = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.mib_notes, wraplength=wrap, justify="left", foreground="#555").pack(
+            fill="x", pady=(6, 0))
+
+    def on_mib_select(self, _event=None):
+        sel = self.mib_tree.selection()
+        if sel:
+            label = next(lb for k, lb, _ in MIB_FIELDS if k == sel[0])
+            self.mib_help.set(f"{label}: {MIB_HELP[sel[0]]}")
+
+    def update_mib_tab(self):
+        shown = [p for p in self.mib_info if p not in self.hidden]
+        pcis = sorted(sorted(shown, key=lambda p: -self.mib_info[p]["n"])[:self.MIB_COLS])
+        for j in range(self.MIB_COLS):
+            col, vals, head = f"c{j}", {}, ""
+            if j < len(pcis):
+                pci, info = pcis[j], self.mib_info[pcis[j]]
+                vals = describe_mib(info["mib"], info["f_ssb"], info["issb"].most_common(1)[0][0])
+                vals.update(n=str(info["n"]), issb=", ".join(str(i) for i in sorted(info["issb"])),
+                            content="constant" if not info["changes"] else f"changed {info['changes']}×")
+                head = f"PCI {pci}"
+            self.mib_tree.heading(col, text=head)
+            for k, _, _ in MIB_FIELDS:
+                self.mib_tree.set(k, col, vals.get(k, ""))
+        notes, groups = [], {}
+        for p in shown:
+            i = self.mib_info[p]
+            groups.setdefault((round((i["f_ssb"] or 0) / 1e3), i["key"]), []).append(p)
+        for ps in groups.values():
+            if len(ps) > 1:
+                notes.append(f"PCI {' and '.join(map(str, sorted(ps)))}: same SSB frequency and the same MIB, "
+                             "most likely sectors of one site.")
+        ann = sorted(p for p in shown if self.mib_info[p]["mib"]["kssb"] < 24)
+        if ann:
+            notes.append(f"PCI {', '.join(map(str, ann))}: SIB1 announced, so phones can probably attach directly "
+                         "(standalone 5G). An inference: SIB1 itself is not decoded.")
+        self.mib_notes.set("\n".join(notes))
 
     def set_hidden(self, hidden: set):
         self.hidden = set(hidden)
@@ -966,25 +1045,55 @@ class App:
         r2.pack(fill="x", pady=(3, 0))
         ttk.Label(r2, text="Scan LOs").pack(side="left")
         self.v_scan = tk.StringVar(value=str(a.freq or "2131"))
-        e_scan = ttk.Entry(r2, textvariable=self.v_scan, width=24)
+        e_scan = ttk.Combobox(r2, textvariable=self.v_scan, width=22,
+                              values=("2g 5g", "2g", "5g", "2131 2670", str(a.freq or "2131")))
         e_scan.pack(side="left", padx=(3, 2))
         self.btn_scan = ttk.Button(r2, text="Scan", command=self.scan_entry, width=7)
         self.btn_scan.pack(side="right")
+        r3 = ttk.Frame(ch)
+        r3.pack(fill="x", pady=(3, 0))
+        ttk.Label(r3, text="looks per SSB").pack(side="left")
+        self.v_looks = tk.StringVar(value=str(SCAN_LOOKS))
+        e_looks = ttk.Spinbox(r3, from_=1, to=4, textvariable=self.v_looks, width=3)
+        e_looks.pack(side="left", padx=(3, 8))
+        self.v_eta = tk.StringVar(value="")
+        ttk.Label(r3, textvariable=self.v_eta, foreground="#555").pack(side="left")
+        self.v_scan.trace_add("write", lambda *_: self.update_eta())
+        self.v_looks.trace_add("write", lambda *_: self.update_eta())
+        self.update_eta()
         cols = ("band", "lo", "ssb", "pci", "mibs", "snr", "cfo")
         self.found = ttk.Treeview(ch, columns=cols, show="headings", height=10, selectmode="browse")
         self.fit_columns(self.found, ("Band", "LO", "SSB MHz", "PCI", "MIBs", "SNR dB", "CFO kHz"),
-                         ("n41/n7", "5990", "5989.990", "1007", "99/99", "-10.0", "+15.00"))
+                         ("n41/n38 30k", "5990", "5989.990", "1007", "99/99", "-10.0", "+15.00"))
         self.found.pack(fill="both", expand=True, pady=(3, 0))
         self.found.bind("<Double-Button-1>", self.on_found_double)
-        hint = ("double-click a cell to track it\nLOs: 2131 2670, or a range 2175-2715/15" if not a.replay
-                else "replay: no board to tune")
+        hint = ("double-click a cell to track it\nLOs: 2131 2670, a range 2175-2715/12, or 2g / 5g\n"
+                "(the C5's whole 2.13-2.73 / 4.79-5.99 GHz)" if not a.replay else "replay: no board to tune")
         ttk.Label(ch, text=hint, foreground="#555", justify="left").pack(anchor="w", pady=(2, 0))
         e_lo.bind("<Return>", lambda _e: self.track_entry())
         e_ssb.bind("<Return>", lambda _e: self.track_entry())
         e_scan.bind("<Return>", lambda _e: self.scan_entry())
         if a.replay:
-            for w in (e_lo, e_ssb, e_scan, self.btn_track, self.btn_scan):
+            for w in (e_lo, e_ssb, e_scan, e_looks, self.btn_track, self.btn_scan):
                 w.configure(state="disabled")
+
+    def scan_plan(self):
+        """(tunable LOs, untunable LOs, looks) from the scan entries; ValueError if unreadable."""
+        los = parse_los(self.v_scan.get())
+        looks = int(self.v_looks.get())
+        if not 1 <= looks <= 8:
+            raise ValueError("looks per SSB: 1 to 8")
+        return [lo for lo in los if lo_tunable(lo)], [lo for lo in los if not lo_tunable(lo)], looks
+
+    def update_eta(self):
+        from .cell_scan import sweep_eta_s
+        try:
+            los, _, looks = self.scan_plan()
+        except ValueError:
+            self.v_eta.set("")
+            return
+        t = sweep_eta_s(los, looks, getattr(self.args, "gain", "auto") == "auto", getattr(self.args, "workers", 2))
+        self.v_eta.set(f"{len(los)} LOs, about {t / 60:.0f} min" if t >= 90 else f"{len(los)} LOs, about {t:.0f} s")
 
     def cfo_guess(self, f_mhz: float):
         """CFO (Hz) the board's crystal causes at f_mhz, from the last timing fit; None if unknown."""
@@ -1040,13 +1149,12 @@ class App:
         self.track(lo, ssb)
 
     def scan_entry(self):
+        from .cell_scan import sweep_eta_s
         try:
-            los = parse_los(self.v_scan.get())
+            los, bad, looks = self.scan_plan()
         except ValueError:
-            self.add_log("scan: give LOs in MHz, e.g. 2131 2670 or 2175-2715/15")
+            self.add_log("scan: give LOs in MHz, e.g. 2131 2670, 2175-2715/12 or 2g 5g, and looks per SSB 1-8")
             return
-        bad = [lo for lo in los if not lo_tunable(lo)]
-        los = [lo for lo in los if lo_tunable(lo)]
         if bad:
             self.add_log(f"scan: skipping {bad} (the C5 tunes {C5_TUNE_MHZ[0]} and {C5_TUNE_MHZ[1]} MHz)")
         if not los:
@@ -1054,41 +1162,54 @@ class App:
         for iid in self.found.get_children():
             self.found.delete(iid)
         self.found_cells.clear()
-        cfo_of = lambda lo: self.cfo_guess(lo) or 0.0       # noqa: E731
+        ppm = self.clock_ppm
+        eta = sweep_eta_s(los, looks, getattr(self.args, "gain", "auto") == "auto", getattr(self.args, "workers", 2))
 
         def go():
             self.drop_stale_events()
-            self.source = ScanSource(self.args, self.events, self.pool, los, cfo_of, self.scan_bursts)
+            self.source = ScanSource(self.args, self.events, self.pool, los, ppm, looks, self.scan_bursts)
             self.source.start()
             self.btn_start.configure(state="disabled")
             self.btn_stop.configure(state="normal")
             self.tabs.select(self.tab_ch)
-            self.add_log(f"scan: {len(los)} LOs, {self.scan_bursts} bursts each"
-                         + (f", CFO centred on the crystal ({self.clock_ppm:+.2f} ppm)" if self.clock_ppm is not None else ""))
+            self.add_log(f"scan: {len(los)} LOs ({los[0]}-{los[-1]} MHz), each until every SSB position was seen "
+                         f"{looks}x (at most {self.scan_bursts} bursts), about {eta / 60:.0f} min; "
+                         + (f"CFO around the crystal ({ppm:+.2f} ppm) +-2 ppm" if ppm is not None else
+                            "crystal unknown: CFO +-12 ppm until a cell decodes"))
         self.after_stop(go)
 
     def on_scan(self, ev):
         lo = ev["lo"]
+        if ev.get("ppm") is not None:
+            self.clock_ppm = float(ev["ppm"])                  # the crystal from the scan's decoded cells
         if not ev["cells"]:
-            self.add_log(f"scan LO {lo} MHz: no cell")
+            self.add_log(f"scan LO {lo} MHz: no cell", ticker=False)
         for c in ev["cells"]:
-            iid = f"{lo}_{c['f_ssb_mhz']:.3f}_{c['pci']}"
+            scs = c.get("scs_khz", 15)
+            iid = f"{lo}_{c['f_ssb_mhz']:.3f}_{c['pci']}" + ("" if scs == 15 else f"_{scs:g}")
             cfo = f"{c['cfo_hz'] / 1e3:+.2f}" if c.get("cfo_hz") is not None else "-"
-            vals = (nr_band(c["f_ssb_mhz"]), lo, f"{c['f_ssb_mhz']:.3f}", c["pci"], f"{c['mibs']}/{c['ssbs']}",
-                    f"{c['snr_db']:+.1f}", cfo)
+            band = nr_band(c["f_ssb_mhz"]) + ("" if scs == 15 else f" {scs:g}k")
+            vals = (band, lo, f"{c['f_ssb_mhz']:.3f}", c["pci"], f"{c['mibs']}/{c['ssbs']}", f"{c['snr_db']:+.1f}", cfo)
             if self.found.exists(iid):
                 self.found.item(iid, values=vals)
             else:
                 self.found.insert("", "end", iid=iid, values=vals)
             self.found_cells[iid] = (lo, c)
-            self.add_log(f"scan LO {lo} MHz: PCI {c['pci']} at {c['f_ssb_mhz']:.3f} MHz ({nr_band(c['f_ssb_mhz'])}), "
+            self.add_log(f"scan LO {lo} MHz: PCI {c['pci']} at {c['f_ssb_mhz']:.3f} MHz ({band}), "
                          f"{c['mibs']} MIBs of {c['ssbs']} SSBs, SNR {c['snr_db']:+.1f} dB")
+        if "n" in ev:                                          # progress of a scan, in the status line
+            left = ev.get("left_s") or 0.0
+            self.ticker.set(f"scan: LO {ev['index'] + 1}/{ev['n']} ({lo} MHz), {len(self.found_cells)} cells, "
+                            f"about {left / 60:.0f} min left")
 
     def on_found_double(self, event):
         iid = self.found.identify_row(event.y)
         if iid not in self.found_cells:
             return
         lo, c = self.found_cells[iid]
+        if c.get("scs_khz", 15) != 15:
+            self.add_log(f"PCI {c['pci']} sends 30 kHz SSBs: the chip's detector and the live decoder handle 15 kHz only")
+            return
         self.track(lo, round(c["f_ssb_mhz"], 3), nid2=c["pci"] % 3, cfo=c.get("cfo_hz"), what=f"PCI {c['pci']}")
 
     def update_status(self):
@@ -1175,6 +1296,9 @@ class App:
                 ax.spines[sp].set_visible(False)
 
     def redraw_tick(self):
+        if self.mib_dirty:
+            self.update_mib_tab()
+            self.mib_dirty = False
         if self.dirty and not self.paused.get():
             self.redraw()
             self.dirty = False

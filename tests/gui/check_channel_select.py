@@ -14,6 +14,7 @@ from tests.fake_device import FakeDevice
 def check_helpers():
     assert parse_los("2131 2670") == [2131, 2670]
     assert parse_los("2131, 2140-2150/5") == [2131, 2140, 2145, 2150]
+    assert len(parse_los("2g")) == 51 and len(parse_los("5G")) == 101 and parse_los("2g 5g")[51] == 4790
     assert nr_band(2125.45) == "n1" and nr_band(2667.75) == "n41/n7"
     assert lo_for_ssb(2125.45, 2131) == 2131             # within 2..6.1 MHz: kept
     assert lo_for_ssb(2667.75, 2131) == 2673             # elsewhere: about 5 MHz above the SSB
@@ -60,6 +61,10 @@ def main():
     run_before = app.run_id
 
     # 2. a scan from the window (fake bursts hold no SSB): it stops the stream, scans, ends cleanly
+    app.v_scan.set("2g 5g")
+    app.v_looks.set("2")
+    root.update()
+    assert app.v_eta.get() == "152 LOs, about 18 min", app.v_eta.get()     # gain 40, one decoder process
     app.v_scan.set("2131 3500")           # 3500 MHz is not tunable: skipped
     app.scan_entry()
     assert pump(lambda: isinstance(app.source, ScanSource) and not app.source.is_alive()), "scan did not finish"
@@ -71,10 +76,21 @@ def main():
     # 3. a found cell in the table; double-click tracks it (N_ID2 from the PCI, CFO from the scan)
     cell = {"f_ssb_mhz": 2125.45, "gscn": 5314, "pci": 166, "ssbs": 5, "mibs": 4, "snr_db": -4.1, "rsrp_dbfs": -58.0,
             "cfo_hz": 10990.0, "ssb_index": [0], "mib": None, "sfn": 10}
-    app.on_scan({"kind": "scan", "lo": 2131, "gain": 40, "cells": [cell]})
+    app.on_scan({"kind": "scan", "lo": 2131, "gain": 40, "cells": [cell], "ppm": -5.17, "index": 0, "n": 152,
+                 "bursts": 58, "left_s": 900.0})
     root.update()
     iid = "2131_2125.450_166"
     assert app.found.exists(iid) and app.found.item(iid)["values"][0] == "n1"
+    assert app.clock_ppm == -5.17, "the scan's crystal is taken over"
+    assert "LO 1/152" in app.ticker.get() and "15 min left" in app.ticker.get(), app.ticker.get()
+    cell30 = {**cell, "f_ssb_mhz": 2595.01, "pci": 401, "scs_khz": 30.0, "cfo_hz": 13400.0}
+    app.on_scan({"kind": "scan", "lo": 2598, "gain": 40, "cells": [cell30]})
+    root.update()
+    iid30 = "2598_2595.010_401_30"
+    assert app.found.item(iid30)["values"][0] == "n41/n38 30k", app.found.item(iid30)
+    n_cmd = len(ssbdet_cmds())
+    app.on_found_double(types.SimpleNamespace(y=app.found.bbox(iid30)[1] + 5))
+    assert "30 kHz SSBs" in app.log.get("1.0", "end") and len(ssbdet_cmds()) == n_cmd, "a 30 kHz cell is not tracked"
     mib = dict(sfn=1, hrf=0, scs_common_khz=15, kssb=6, dmrs_typeA_pos=3, pdcch_config_sib1=16, coreset0=1,
                searchspace0=0, cell_barred=False, intra_freq_reselection="allowed")
     app.on_result(dict(pci=317, ok=True, cfo=13.9e3, snr_db=4.0, mib=mib, issb=3, t_pss_us=2e6, t_frame_us=2e6 - 1000,
@@ -83,6 +99,12 @@ def main():
     app.redraw()
     root.update()
     assert app.cells.exists("317") and 317 in app.cfo_pts
+    app.update_mib_tab()                  # MIB tab: the cell in words (capture/nr_mib.py)
+    assert app.mib_tree.heading("c0")["text"] == "PCI 317", app.mib_tree.heading("c0")
+    assert app.mib_tree.set("coreset0_mhz", "c0") == "2665.50-2669.82" and app.mib_tree.set("issb", "c0") == "3"
+    app.mib_tree.selection_set("sib1")
+    root.update()
+    assert app.mib_help.get().startswith("SIB1 announced:"), app.mib_help.get()
     app.on_found_double(types.SimpleNamespace(y=app.found.bbox(iid)[1] + 5))
     assert pump(lambda: app.n_frames >= 5 and app.cfg.get("f_lo") == 2131e6), "no frames after the double-click"
     c = ssbdet_cmds()[-1]

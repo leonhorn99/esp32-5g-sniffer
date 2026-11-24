@@ -111,6 +111,41 @@ With on-chip detection, PCI 317 gave 306 SSBs in 15 s.
 
 **Cross-check without MATLAB:** the NumPy raster search (`capture/cell_scan.py`) on the 23 Nov survey bursts at LO 2655–2685 MHz also finds PCI 317 at GSCN 6669: 5 of 5 MIBs, CFO −8.11 kHz (MATLAB −8.109 kHz), SSB index 3. Its MIB: k_SSB 6, pdcch-ConfigSIB1 16, not barred.
 
+## Scan of the whole tuning range in the live view (24 Nov 2026, 10:58)
+
+The live view's Channel tab, `2g 5g`, on a virtual display with the board:
+- **Coverage:** 152 LOs from 2130 to 2730 and 4790 to 5990 MHz, in 12 MHz steps (SSB centres 2124–2736 and 4784–5996 MHz without gaps).
+- **Settings:** 2 looks per SSB, auto gain (index 68–80), 2 decoder processes.
+- **Time: 14.1 min** (845 s), of which the 2 GHz part took 6.0 min.
+- **Bursts:** 47 per LO in the median (41–65), 7164 in all. The old survey took 60 untimed bursts per LO and still left 3–15 % of the SSB period uncovered at some LOs.
+
+| Found | SSB | SCS | MIBs / SSBs | SNR | CFO |
+|---|---|---|---|---|---|
+| PCI 165 (n1) | 2125.45 MHz | 15 kHz | 2 / 2 | −2.1 dB | +12.56 kHz |
+| PCI 317 (n7) | 2667.75 MHz | 15 kHz | 2 / 2 | +2.1 dB | +15.94 kHz |
+
+- **Nothing else:** no 30 kHz SSBs in the TDD bands (n40, n41/n38), and nothing at 4.8–6 GHz, as in the surveys of 23 and 24 Nov. As far as we know, no operator runs NR in 5 GHz in Austria (n46 is unlicensed, n79 is used in Asia).
+- **Not found: PCI 166** (−4.4 dB), the sector next to PCI 165, which 100 untimed bursts had found at 07:04. Two looks give every SSB about two chances.
+- **The crystal:** −5.91 ppm from PCI 165 at the first LO, −5.98 ppm from PCI 317. From the first decoded cell on, every LO searched ±2 ppm (3 CFO steps) instead of ±30 kHz (13 steps).
+
+Log: `results/sweep_2g5g_20261124.jsonl` (one line per LO), window: `results/ssb_live_sweep_2g5g.png`.
+
+## SIB1 of PCI 317, decoded offline (23 Nov recording, decoded 24 Nov 2026)
+
+`matlab/sib1_offline.m` on the 60 bursts of the 23 Nov survey at LO 2670 MHz:
+- **Frame clock:** 5 bursts with PCI 317's MIB gave its frame clock on the board's clock: +3.0 ppm, residual 0.22 µs RMS.
+- **Where SIB1's control channel is**, from the MIB (pdcch-ConfigSIB1 16): CORESET#0 of 24 RB × 2 symbols at 2665.50–2669.82 MHz, Type0-PDCCH in slots 3 and 4 of even frames.
+- **SIB1 decoded:** 5 such slots lay whole in a burst. In 2 of them (slot 3 of SFN 240 and 336) the PDCCH carried a DCI 1_0 with the SI-RNTI:
+  - aggregation level 4, RBs 0–19, symbols 3–11 (TDRA row 2), MCS 4, RV 0;
+  - its PDSCH decoded with the CRC passing: a 111-byte SIB1, identical in both.
+- **When the cell sends it:** both SFNs are multiples of 16, the start of a 160 ms SIB1 period. The other 3 slots held no SIB1, and on 24 Nov no slot 3 of such a frame was captured. So the cell most likely sends SIB1 once per 160 ms without repetitions (*estimate* from 11 slots).
+- **The network:** bit 42 of the message holds MCC 232 (Austria) followed by MNC 05.
+  - This is read from the bit pattern, not yet from a full ASN.1 decode.
+  - As far as we know, 232-05 is Hutchison Drei Austria.
+- **SNR:** the empty symbols of that slot (2 and 12) are about 29 dB below the occupied ones.
+
+PCI 165 (n1, LO 2131): none of the 9 suitable slots in the 23 Nov n1 recording was in a frame with SFN divisible by 16, and none carried SIB1. Its CORESET#0 (2120.68–2129.32 MHz) also reaches 0.3 MHz past the 20 MS/s band at LO 2131 (the C5 tunes no lower). A capture timed to that slot would settle it.
+
 ## The board's crystal
 
 The frequency offset of a cell, and the drift of its SFN-anchored timing, measure the board's crystal against the base station. The two agree to 30–130 Hz, and two base stations agreed on the board's clock within 0.2 ppm.

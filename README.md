@@ -2,7 +2,7 @@
 
 **Read 5G NR synchronisation blocks with a €5 Wi-Fi chip.** An ESP32-C5 development board, with its own PCB antenna, receives the SS/PBCH blocks (SSBs) of 5G cells. This project decodes them into:
 
-- the cell identity (PCI), the SSB index (beam), the frame number (SFN) and the full MIB;
+- the cell identity (PCI), the SSB index (beam), the frame number (SFN) and the full MIB, explained field by field in the live view (where the cell's SIB1 control channel is, which cells are sectors of one site);
 - the frequency offset, with the board's crystal error as a by-product;
 - frame timing to about 0.1 µs on the chip's clock;
 - a channel estimate for every SSB.
@@ -34,7 +34,7 @@ It is receive-only, and it decodes only the broadcast signals every phone reads 
   - shows several cells at once, each of which can be shown or hidden;
   - selects the channel in the window: scan a list of LOs, double-click a found cell to track it, or switch the chip to another sector of the same site.
 - **A reference detector in MATLAB** (`matlab/ssb_detect.m`, 5G Toolbox): it searches the whole GSCN raster, both subcarrier spacings (15/30 kHz) and L_max 4/8. It also sums SSS statistics over bursts, to find weak cells.
-- **A cell scanner** (`capture/cell_scan.py`): every NR cell on the raster around one or more LOs, as a table with PCI, SNR, RSRP, CFO and MIB.
+- **A cell scanner** (`capture/cell_scan.py`, and in the live view): every NR cell on the raster around one or more LOs, or over the C5's whole 2.13–2.73 and 4.79–5.99 GHz, as a table with PCI, SNR, RSRP, CFO and MIB.
 - **A headless monitor** (`capture/ssb_monitor.py`): every decoded SSB as JSON, CSV or UDP, with alerts for new PCIs, MIB changes, SFN or timing jumps and frequency outliers.
 - **Capture and survey tools:**
   - burst captures and band surveys with stitched spectra;
@@ -72,7 +72,7 @@ With an ESP32-C5 board:
 
 ```bash
 firmware/fw.sh build && firmware/fw.sh flash /dev/ttyACM0       # needs the pinned ESP-IDF, see firmware/README.md
-.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2131 2670             # which cells are there?
+.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2131 2670             # which cells are there? (--freq 2g 5g: everything the C5 tunes)
 .venv_local/bin/python -m capture.ssb_live --port /dev/ttyACM0 --freq 2131 --ssb 2125.45
 ```
 
