@@ -102,7 +102,12 @@ Every cut is decoded in a separate process. It is also tried with the other two 
   - CFO of the decoded SSBs, with the chip's own estimate and the CFO the measured clock rate implies;
   - SFN-anchored frame timing with a quadratic clock fit, plus the clock error now (ppm) and its change per minute;
   - SNR (o MIB decoded, x failed).
-- **Side panels:** stream counters (including board losses), the latest MIB fields with RSRP (dBFS, not calibrated) and the chip's PCI, the cell table, the channel panel, a log.
+- **Side panel, in three tabs:**
+  - **Cell:** stream counters (including board losses), the latest MIB fields with RSRP (dBFS, not calibrated) and the chip's PCI, the cell table;
+  - **Channel:** see below;
+  - **Log.**
+  - A line below the tabs shows the latest message.
+  - The panel takes the width its contents need at the desktop's font size, and the window grows to fit it (`--geometry WxH` overrides).
 
 **Controls:**
 - Click a row of the cell table to show or hide a PCI, double-click to show only it, "Show all" to undo; `--hide 165` starts with PCIs hidden.

@@ -522,7 +522,8 @@ class App:
         self.reset_data()
 
         root.title("SSB live view (ESP32-C5)")
-        root.geometry(args.geometry)
+        if args.geometry:
+            root.geometry(args.geometry)
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
         bar = ttk.Frame(root, padding=(8, 6))
@@ -541,26 +542,36 @@ class App:
         self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
         self.build_axes()
 
-        side = ttk.Frame(root, padding=(6, 4), width=450)
+        # side panel: as wide as its contents need at the desktop's font size (a fixed width cut it
+        # off with larger fonts), in tabs so that it fits the height of a 1080-line screen
+        side = ttk.Frame(root, padding=(6, 4))
         side.grid(row=1, column=1, sticky="ns")
-        side.grid_propagate(False)
-        side.rowconfigure(4, weight=1)
+        side.rowconfigure(0, weight=1)
+        self.tabs = ttk.Notebook(side)
+        self.tabs.grid(row=0, column=0, sticky="nsew")
+        tab_cell, tab_ch, tab_log = (ttk.Frame(self.tabs, padding=4) for _ in range(3))
+        self.tabs.add(tab_cell, text="Cell")
+        self.tabs.add(tab_ch, text="Channel")
+        self.tabs.add(tab_log, text="Log")
+        self.tab_cell, self.tab_ch, self.tab_log = tab_cell, tab_ch, tab_log
+        self.ticker = tk.StringVar(value="")          # the latest message, below the tabs
+        ttk.Label(side, textvariable=self.ticker, foreground="#555", width=1).grid(row=1, column=0, sticky="ew",
+                                                                                  pady=(4, 0))
         mono = ("DejaVu Sans Mono", 9)
-        st = ttk.LabelFrame(side, text="Stream", padding=4)
+        st = ttk.LabelFrame(tab_cell, text="Stream", padding=4)
         st.grid(row=0, column=0, sticky="ew")
         self.status = tk.StringVar(value="not started")
         ttk.Label(st, textvariable=self.status, font=mono, justify="left").pack(anchor="w")
-        mf = ttk.LabelFrame(side, text="Latest decoded MIB", padding=4)
+        mf = ttk.LabelFrame(tab_cell, text="Latest decoded MIB", padding=4)
         mf.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.mib_text = tk.StringVar(value="-")
         ttk.Label(mf, textvariable=self.mib_text, font=mono, justify="left").pack(anchor="w")
-        cf = ttk.LabelFrame(side, text="Cells", padding=4)
+        cf = ttk.LabelFrame(tab_cell, text="Cells", padding=4)
         cf.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         cols = ("show", "pci", "ssbs", "mibs", "sfn", "snr", "cfo")
         self.cells = ttk.Treeview(cf, columns=cols, show="headings", height=4, selectmode="none")
-        for c, w, t in zip(cols, (40, 45, 55, 55, 50, 65, 80), ("Show", "PCI", "SSBs", "MIBs", "SFN", "SNR dB", "CFO kHz")):
-            self.cells.heading(c, text=t)
-            self.cells.column(c, width=w, anchor="center" if c == "show" else "e")
+        self.fit_columns(self.cells, ("Show", "PCI", "SSBs", "MIBs", "SFN", "SNR dB", "CFO kHz"),
+                         ("✓", "1007", "99999", "99999", "1023", "-10.0", "+15.000"), center=("show",))
         self.cells.pack(fill="x")
         self.cells.bind("<ButtonRelease-1>", self.on_cell_click)
         self.cells.bind("<Double-Button-1>", self.on_cell_double)
@@ -570,14 +581,18 @@ class App:
         ttk.Button(row, text="Show all", command=self.show_all).pack(side="left")
         ttk.Label(row, text="click: show/hide  double: only this\nright-click: track this PCI on the chip",
                   foreground="#555", justify="left").pack(side="left", padx=8)
-        self.build_channel_panel(side, row=3)
-        lf = ttk.LabelFrame(side, text="Log", padding=4)
-        lf.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
-        self.log = tk.Text(lf, height=10, width=44, font=("DejaVu Sans Mono", 8), wrap="none")
-        sb = ttk.Scrollbar(lf, command=self.log.yview)
+        self.build_channel_panel(tab_ch)
+        self.log = tk.Text(tab_log, height=10, width=44, font=("DejaVu Sans Mono", 8), wrap="none")
+        sb = ttk.Scrollbar(tab_log, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
         self.log.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        if not args.geometry:
+            # wide enough for the side panel next to a readable figure, tall enough for the panel
+            root.update_idletasks()
+            w = max(1560, side.winfo_reqwidth() + 1000)
+            h = max(920, side.winfo_reqheight() + bar.winfo_reqheight() + 16)
+            root.geometry(f"{w}x{h}")
 
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self.poll)
@@ -699,7 +714,9 @@ class App:
         self.close()
 
     # ------------------------------------------------------------------ event handling
-    def add_log(self, text: str):
+    def add_log(self, text: str, ticker: bool = True):
+        if ticker:
+            self.ticker.set(text if len(text) <= 90 else text[:87] + "...")
         self.log.insert("end", text + "\n")
         if int(self.log.index("end-1c").split(".")[0]) > 400:
             self.log.delete("1.0", "50.0")
@@ -837,10 +854,10 @@ class App:
                 f"PSS stat (chip) {r['stat'] if r['stat'] is not None else '-'}   SSS stat {r['sss_stat']:.0f}")
             if pci not in self.hidden:
                 self.add_log(f"{t:8.3f}s PCI {pci} i{r['issb']} SFN {m['sfn']:4d} h{m['hrf']} "
-                             f"{r['snr_db']:+5.1f} dB {r['cfo'] / 1e3:+6.2f} kHz")
+                             f"{r['snr_db']:+5.1f} dB {r['cfo'] / 1e3:+6.2f} kHz", ticker=False)
         elif pci not in self.hidden:
             self.add_log(f"{t:8.3f}s PCI {pci} i{r.get('issb')} no MIB      {r['snr_db']:+5.1f} dB"
-                         if r.get("snr_db") is not None else f"{t:8.3f}s PCI {pci}: {r.get('error')}")
+                         if r.get("snr_db") is not None else f"{t:8.3f}s PCI {pci}: {r.get('error')}", ticker=False)
         self.update_cell(pci)
         self.update_mib_panel()
         self.dirty = True
@@ -913,15 +930,25 @@ class App:
         ssb = round(self.cfg.get("f_ssb", float(self.args.ssb) * 1e6) / 1e6, 3)
         self.track(lo, ssb, nid2=pci % 3, cfo=cfo, what=f"PCI {pci}")
 
+    @staticmethod
+    def fit_columns(tree, heads, samples, center=()):
+        """Column widths from the fonts in use (the desktop may use larger ones than our tests)."""
+        import tkinter.font as tkf
+        body, head = tkf.nametofont("TkDefaultFont"), tkf.nametofont("TkHeadingFont")
+        for c, h, smp in zip(tree["columns"], heads, samples):
+            tree.heading(c, text=h)
+            tree.column(c, width=max(head.measure(h) + 14, body.measure(smp) + 12), stretch=False,
+                        anchor="center" if c in center else "e")
+
     # ------------------------------------------------------------------ channel selection
-    def build_channel_panel(self, parent, row: int):
+    def build_channel_panel(self, parent):
         """LO / SSB entry with Track, a scan over LOs, and the table of cells found (double-click:
         track that cell). Live mode only: the board has one receiver, so a scan or a new channel
         first stops the running stream."""
         tk, ttk = self.tk, self.ttk
         a = self.args
         ch = ttk.LabelFrame(parent, text="Channel", padding=4)
-        ch.grid(row=row, column=0, sticky="ew", pady=(6, 0))
+        ch.pack(fill="both", expand=True)
         r1 = ttk.Frame(ch)
         r1.pack(fill="x")
         self.v_lo = tk.StringVar(value=str(a.freq or ""))
@@ -944,15 +971,14 @@ class App:
         self.btn_scan = ttk.Button(r2, text="Scan", command=self.scan_entry, width=7)
         self.btn_scan.pack(side="right")
         cols = ("band", "lo", "ssb", "pci", "mibs", "snr", "cfo")
-        self.found = ttk.Treeview(ch, columns=cols, show="headings", height=4, selectmode="browse")
-        for c, w, t in zip(cols, (52, 44, 72, 40, 50, 55, 62), ("Band", "LO", "SSB MHz", "PCI", "MIBs", "SNR dB", "CFO kHz")):
-            self.found.heading(c, text=t)
-            self.found.column(c, width=w, anchor="e")
-        self.found.pack(fill="x", pady=(3, 0))
+        self.found = ttk.Treeview(ch, columns=cols, show="headings", height=10, selectmode="browse")
+        self.fit_columns(self.found, ("Band", "LO", "SSB MHz", "PCI", "MIBs", "SNR dB", "CFO kHz"),
+                         ("n41/n7", "5990", "5989.990", "1007", "99/99", "-10.0", "+15.00"))
+        self.found.pack(fill="both", expand=True, pady=(3, 0))
         self.found.bind("<Double-Button-1>", self.on_found_double)
-        hint = ("double-click a cell to track it   (LOs: 2131 2670 or 2175-2715/15)" if not a.replay
+        hint = ("double-click a cell to track it\nLOs: 2131 2670, or a range 2175-2715/15" if not a.replay
                 else "replay: no board to tune")
-        ttk.Label(ch, text=hint, foreground="#555").pack(anchor="w", pady=(2, 0))
+        ttk.Label(ch, text=hint, foreground="#555", justify="left").pack(anchor="w", pady=(2, 0))
         e_lo.bind("<Return>", lambda _e: self.track_entry())
         e_ssb.bind("<Return>", lambda _e: self.track_entry())
         e_scan.bind("<Return>", lambda _e: self.scan_entry())
@@ -993,6 +1019,7 @@ class App:
         def go():
             self.start()
             self.add_log(note)
+            self.tabs.select(self.tab_cell)
         self.after_stop(go)
 
     def track_entry(self):
@@ -1035,6 +1062,7 @@ class App:
             self.source.start()
             self.btn_start.configure(state="disabled")
             self.btn_stop.configure(state="normal")
+            self.tabs.select(self.tab_ch)
             self.add_log(f"scan: {len(los)} LOs, {self.scan_bursts} bursts each"
                          + (f", CFO centred on the crystal ({self.clock_ppm:+.2f} ppm)" if self.clock_ppm is not None else ""))
         self.after_stop(go)
@@ -1326,7 +1354,7 @@ def main(argv=None):
     add_source_args(p)
     p.add_argument("--hide", type=int, nargs="*", default=[], help="PCIs to hide at the start (click in the Cells table to change)")
     p.add_argument("--no-autostart", dest="autostart", action="store_false")
-    p.add_argument("--geometry", default="1560x920")
+    p.add_argument("--geometry", default=None, help="window size WxH (default: fits the side panel, at least 1560x920)")
     p.add_argument("--dpi", type=int, default=90)
     p.add_argument("--quit-after", type=float, default=None, help="seconds; then save --snapshot and quit (tests)")
     p.add_argument("--snapshot", default=None, help="PNG path for --quit-after")
