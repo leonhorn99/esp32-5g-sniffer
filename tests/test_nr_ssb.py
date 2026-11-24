@@ -82,6 +82,27 @@ class TestAgainstToolbox(unittest.TestCase):
         self.assertAlmostEqual(nr.useful_start_s(16), 1e-3 + 4544 / 30.72e6)
 
 
+class TestScs30(unittest.TestCase):
+    """30 kHz SSBs, case C, L_max 8 (TDD bands): a burst from nrWaveformGenerator with the RF
+    symbol phase (matlab/export_scs30_fixture.m)."""
+
+    def test_case_c_lmax8(self):
+        fx = json.loads((ROOT / "tests" / "fixtures" / "ssb_caseC_30k.json").read_text())
+        v = np.fromfile(ROOT / "tests" / "fixtures" / "ssb_caseC_30k.bin", dtype="<i2").astype(float)
+        x, fs = v[0::2] + 1j * v[1::2], fx["fs"]
+        self.assertAlmostEqual(nr.useful_start_s(2, 30e3), fx["ssb"][0]["t_useful_s"])
+        peaks = nr.pss_search(x, fs, 0.0, cfo_max=0, scs=30e3, max_peaks=10)
+        self.assertEqual(len(peaks), 8)
+        for p, s in zip(peaks, fx["ssb"]):
+            self.assertLess(abs(p["t_pss"] / fs - s["t_useful_s"]), 1 / fs)
+            r = nr.receive(x, fs, p["t_pss"], fx["f_ssb"], fx["f_ssb"], cfo=0, t_first_us=0.0, scs=30e3, lmax=8,
+                           pattern="C")
+            self.assertTrue(r["ok"])
+            self.assertEqual((r["pci"], r["issb"], r["mib"]["sfn"], r["mib"]["hrf"]), (fx["pci"], s["issb"], s["sfn"], s["hrf"]))
+            self.assertLess(abs(r["cfo"]), 20)
+            self.assertLess(abs(r["t_frame_us"]), 0.05)
+
+
 SESSION = "20261123_140216_ssbdet_v2"
 SESSION_DIR, EXPECTED = find_session(SESSION)
 

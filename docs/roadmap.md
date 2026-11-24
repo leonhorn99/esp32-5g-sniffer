@@ -2,6 +2,14 @@
 
 Roughly ordered by value for effort within each group. *(estimate)* marks our guesses.
 
+**Status 24 Nov 2026:**
+- **Done** (firmware version 3, PC-tested; host tools tested on recorded data):
+  - firmware 1 (sub-µs timestamps), 2 (cell search), 3 (SSS/PCI), 7 (decimated cuts) and part of 9 (reset reason);
+  - host 1 (cell scanner, as a CLI and `--ssb auto` in the live view, not yet a GUI tab), 3 (30 kHz and L_max 8), 6 (headless monitor with alerts) and 7 (SigMF, a JSON/UDP feed);
+  - RSRP in dBFS (the calibration part of host 5).
+- **Dropped:** `FREQK` from firmware 8. It is only approximate (about ±30 kHz), which would corrupt CFO and crystal measurements; `TUNEM` already picks the good path above 3 GHz.
+- **Open:** everything else below.
+
 ## Firmware (branch `ssb-sniffer`)
 
 1. **Sub-microsecond timestamps.** Take `t0` from the CPU cycle counter or the systimer's raw ticks instead of `esp_timer` µs. The SFN timing would drop below today's 0.3 µs RMS floor (*estimate:* 20–50 ns). This is the key to time sync and TDOA uses.

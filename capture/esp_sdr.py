@@ -164,9 +164,12 @@ class Burst:
 class SsbFrame:
     """One SSBDET frame (firmware branch ssb-sniffer): the raw I/Q around one detected SSB.
 
-    The first sample is at t0_us + (flip + start) / fs; pss_idx is the raw index (in the
-    capture) of the PSS useful start, so pss_idx - start is its index in this cut.
-    n = 0: header-only frame (the firmware sends the raw cut of every k-th SSB only).
+    The first sample is at t0_us + t0_sub_ns / 1000 + (flip + start) / fs, sample j at raw
+    index start + j R; pss_idx is the raw index (in the capture) of the PSS useful start, so
+    (pss_idx - start) / R is its index in this cut. n = 0: header-only frame (the firmware
+    sends the I/Q of every k-th SSB only). From firmware ssb3 on: R > 1 = decimated cut at
+    fs / R with the SSB centre at 0 Hz and cfo_ddc_hz already removed (samples shifted right
+    by gsh bits), pci from the on-chip SSS (-1 below threshold), sss its statistic.
     """
     seq: int
     n: int
@@ -185,6 +188,12 @@ class SsbFrame:
     crc_ok: bool
     host_time: float
     reply: str = ""
+    t0_sub_ns: int = 0         # ssb3: sub-microsecond part of t0 (62.5 ns steps)
+    pci: int | None = None     # ssb3: PCI from the on-chip SSS (-1: below threshold)
+    sss: float | None = None   # ssb3: SSS statistic
+    R: int = 1                 # ssb3: decimation of the cut (1 = raw)
+    gsh: int = 0               # ssb3: right shift applied to a decimated cut
+    cfo_ddc_hz: int = 0        # ssb3: CFO removed from a decimated cut
 
     @property
     def fmt(self) -> str:
@@ -192,7 +201,16 @@ class SsbFrame:
 
     @property
     def t_first_us(self) -> float:
-        return self.t0_us + (self.flip + self.start) / self.fs * 1e6
+        return self.t0_us + self.t0_sub_ns / 1000 + (self.flip + self.start) / self.fs * 1e6
+
+    @property
+    def fs_cut(self) -> float:
+        """Sample rate of the payload."""
+        return self.fs / self.R
+
+    @property
+    def pss_in_cut(self) -> float:
+        return (self.pss_idx - self.start) / self.R
 
     def iq(self) -> np.ndarray:
         return unpack_iq(self.payload, self.n, self.fmt)
@@ -325,6 +343,8 @@ class EspSdr:
                 out["version"] = None
         if "FWOPT" in self.caps:
             out["fwopt"] = self.cmd("FWOPT?")
+        if "BOOT" in self.caps:            # ssb3: why the chip last started (brownout, panic, ...)
+            out["boot"] = self._try("BOOT?")
         out["transport"] = self._try("TRANSPORT?")
         out["range"] = self._try("RANGE?")
         return out
@@ -411,16 +431,22 @@ class EspSdr:
 def ssb_stream(sdr: "EspSdr", rate_code: int, offset_hz: int, nid2: int, cfo_hz: int, thr10: int = 140,
                pre_us: int = 20, post_us: int = 20, period_us: int = 20000, bits: int = 8, every: int = 1,
                max_frames: int = 0, track: bool = True, duration: float | None = None, stop=None,
-               idle_timeout: float | None = None):
+               idle_timeout: float | None = None, dec: bool = False, cfo_span: int = 0):
     """Run SSBDET (on-chip SSB detection) and yield ("start", line), ("frame", SsbFrame)...,
     ("end", line). Other text lines from the board (ESP-IDF log, e.g. a brownout or panic
     message before a reset) come as ("text", line). The run ends after max_frames, after
     duration seconds, or when stop() returns True (both send a stop line and wait for the END line).
+    Firmware ssb3 (CAPS SSBDET3): nid2 3 searches all three N_ID2, cfo_span > 0 searches the CFO
+    +- cfo_span in 5 kHz steps, dec sends cuts decimated to 5 MS/s (about 4x less data).
     idle_timeout: after that many seconds without any line, send STOP: an END line then comes as
     ("idle", line) (alive, but no SSB found), no END within 5 s raises TimeoutError (board dead)."""
     fmt_bits = 16 if bits == 8 else 20
     command = (f"SSBDET {rate_code} {int(offset_hz)} {nid2} {int(cfo_hz)} {thr10} {pre_us} {post_us} "
                f"{period_us} {fmt_bits} {every} {max_frames} {1 if track else 0}")
+    if dec or cfo_span or nid2 > 2:
+        if "SSBDET3" not in sdr.caps:
+            raise EspSdrError("cell search and decimated cuts need firmware ssb3 (CAPS SSBDET3): flash the current build")
+        command += f" {1 if dec else 0} {int(cfo_span)}"
     sdr._write_line(command)
     reply = sdr._read_line(timeout=sdr.timeout + 5)
     if not reply.startswith("OK SSBDET"):
@@ -454,7 +480,10 @@ def ssb_stream(sdr: "EspSdr", rate_code: int, offset_hz: int, nid2: int, cfo_hz:
             continue
         p = line.split()
         # SSBF seq n crc t0_us flip start fs bits mode stat_x10 nid2 cfo_hz pss_idx
+        #      [t0_sub_ns pci sss_x10 R gsh cfo_ddc_hz]   (ssb3)
         n, b = int(p[2]), int(p[8])
+        ext = dict(t0_sub_ns=int(p[14]), pci=int(p[15]), sss=int(p[16]) / 10, R=int(p[17]), gsh=int(p[18]),
+                   cfo_ddc_hz=int(p[19])) if len(p) >= 20 else {}
         fmt = "CAP16" if b == 16 else "CAP20"
         host_time = time.time()
         payload = sdr._read_exact(payload_bytes(n, fmt), timeout=sdr.timeout + 4 * payload_bytes(n, fmt) / 0.9e6) if n else b""
@@ -463,7 +492,7 @@ def ssb_stream(sdr: "EspSdr", rate_code: int, offset_hz: int, nid2: int, cfo_hz:
                                 fs=int(p[7]), bits=b, mode=p[9], stat=int(p[10]) / 10, nid2=int(p[11]),
                                 cfo_hz=int(p[12]), pss_idx=int(p[13]), payload=payload,
                                 crc_ok=(not n) or (zlib.crc32(payload) & 0xFFFFFFFF) == crc,
-                                host_time=host_time, reply=line)
+                                host_time=host_time, reply=line, **ext)
 
 
 def _json_after_keyword(reply: str, keyword: str):

@@ -2,9 +2,9 @@
 
 Two implementations of the same chain:
 - `matlab/ssb_detect.m`: the reference. It is batch only and uses the 5G Toolbox. It covers the GSCN search, 15/30 kHz and L_max 4/8.
-- `capture/nr_ssb.py`: NumPy, used live, 15 kHz and L_max 4.
+- `capture/nr_ssb.py`: NumPy, used live: 15 and 30 kHz SSBs, L_max 4 and 8 (cases A, B, C), the PSS search over a whole raster, RSRP.
 
-The firmware does only the first step (the PSS) on the chip.
+The firmware does the first steps on the chip: the PSS (all versions) and the SSS → PCI (version 3).
 
 ## The chain
 
@@ -34,6 +34,28 @@ The firmware does only the first step (the PSS) on the chip.
    - **CRC-aided polar SC-list decoding** (list 8).
 10. **BCH:** CRC24C, payload descrambling, de-interleaving (TS 38.212 §7.1) → the 24-bit MIB, the 4 SFN LSBs, the half-frame bit and the k_SSB MSB.
 11. **Timing:** the PSS time minus the SSB's symbol position in the half frame, minus 5 ms × half frame, gives the frame start. Frame start minus SFN × 10 ms is constant on the cell's clock.
+
+## Searching a whole raster quickly
+
+`nr_ssb.pss_search_raster` searches all GSCN positions within a burst (about 30 within ±6.1 MHz at 20 MS/s), all three N_ID2 and the CFO hypotheses at once:
+- **One FFT of the burst with 250 Hz bins.** GSCN offsets (multiples of 50 kHz) and CFO steps (5 kHz) are then whole bins, so each hypothesis is just a ±1.1 MHz slice of the same spectrum.
+- **One small inverse FFT per hypothesis**, which correlates at 5 MS/s. At 2.5 MS/s the 0.4 µs lag steps let the peak fall between lags and lost up to 2.7 dB; at 5 MS/s the loss against the full-rate search is 0.13 dB median, 0.59 dB at most.
+- **Speed:** about 0.3 s per 1.64 ms burst for 30 positions × 7 CFOs × 3 N_ID2, decoding included.
+- **On the 23 Nov captures:** 18 of 18 SSBs of PCI 165, no false cell; on the n7 survey bursts it finds PCI 317 like MATLAB.
+
+The cell scanner (`capture/cell_scan.py`) and the live view's `--ssb auto` use it.
+
+## 30 kHz SSBs and L_max 8
+
+`receive(..., scs=30e3, lmax=8, pattern="C")`:
+- **Symbol timing:** symbols are half as long, and the long CP is 144 + 16·2^µ samples at 2048·SCS, on the first symbol of every 0.5 ms.
+- **SSB index:** for L_max 8 the DM-RS carries all 3 bits of the SSB index; the half frame comes from the MIB.
+- **PBCH scrambling:** uses i_SSB mod 8.
+- **Validation:** checked on a case C burst from `nrWaveformGenerator` with the RF symbol phase (`matlab/export_scs30_fixture.m`, 8 SSBs). All 8 give the right PCI and SSB index, the MIB, the CFO within 2 Hz and the frame start to 0.05 µs.
+
+## RSRP
+
+`receive()` reports `rsrp_dbfs`: the mean channel power on the SSS subcarriers (SS-RSRP is defined on the SSS resource elements, TS 38.215), in dB relative to the 10-bit ADC full scale per resource element. Payload units are converted for CAP16 and for decimated cuts. It is not calibrated: the gain index adds an unknown, frequency-dependent gain, and a cable test with a known level is needed for dBm.
 
 ## Pitfalls found on real signals
 
@@ -71,7 +93,7 @@ The C5's crystal moves by several ppm (warm-up, resets; [hardware.md](hardware.m
 
 ### Timing floor
 
-The firmware's `t0_us` has 1 µs resolution. Uniform rounding alone gives 1/√12 = 0.29 µs RMS, and that is what the SFN-anchored timing reaches (0.29–0.30 µs RMS over 30–78 s). A phase-slope timing estimate across subcarriers was noisier (0.51 µs) and was replaced by the interpolated correlation peak. Sub-microsecond timestamps in the firmware are on the [roadmap](roadmap.md).
+The firmware's `t0_us` has 1 µs resolution. Uniform rounding alone gives 1/√12 = 0.29 µs RMS, and that is what the SFN-anchored timing reaches (0.29–0.30 µs RMS over 30–78 s). A phase-slope timing estimate across subcarriers was noisier (0.51 µs) and was replaced by the interpolated correlation peak. Firmware version 3 stamps in 62.5 ns steps; how far that lowers the floor on the chip is not yet measured.
 
 ## Validation
 

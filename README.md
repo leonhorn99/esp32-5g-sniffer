@@ -21,18 +21,23 @@ It is receive-only, and it decodes only the broadcast signals every phone reads 
 
 - **On-chip SSB detection** (firmware command `SSBDET`, our fork of [ESPsoup](https://github.com/pit711/espsoup-firmware)):
   - the ESP32-C5 finds the SSBs of a cell and tracks them on the 20 ms grid;
-  - it sends only the raw I/Q around each SSB, about 25 SSBs per second over USB full speed, where a continuous stream would need 8 times the bandwidth.
+  - it sends only the I/Q around each SSB, about 25 SSBs per second over USB full speed, where a continuous stream would need 8 times the bandwidth.
+  - version 3 (tested on the PC with the identical DSP code, not yet on the chip) also searches for the cell itself (all N_ID2, ±30 kHz), puts the PCI from the SSS in every frame, sends 5 MS/s cuts and stamps them in 62.5 ns steps.
 - **A complete NR SSB receiver in NumPy** (`capture/nr_ssb.py`):
   - the chain: PSS → SSS → PBCH DM-RS → channel estimate → PBCH → CRC-aided polar list decoding → BCH → MIB;
+  - 15 and 30 kHz SSBs, L_max 4 and 8, a fast search over the whole GSCN raster, RSRP (uncalibrated);
   - checked bit for bit against MATLAB's 5G Toolbox;
   - about 7–15 ms per SSB on a laptop.
 - **A live view** (`capture/ssb_live.py`):
   - plays a session from the board or a recording;
-  - scans for the cell by itself, recovers from board resets, can record;
+  - finds the cell by itself (`--ssb auto`), recovers from board resets, can record;
   - shows several cells at once, each of which can be shown or hidden.
 - **A reference detector in MATLAB** (`matlab/ssb_detect.m`, 5G Toolbox): it searches the whole GSCN raster, both subcarrier spacings (15/30 kHz) and L_max 4/8. It also sums SSS statistics over bursts, to find weak cells.
+- **A cell scanner** (`capture/cell_scan.py`): every NR cell on the raster around one or more LOs, as a table with PCI, SNR, RSRP, CFO and MIB.
+- **A headless monitor** (`capture/ssb_monitor.py`): every decoded SSB as JSON, CSV or UDP, with alerts for new PCIs, MIB changes, SFN or timing jumps and frequency outliers.
 - **Capture and survey tools:**
   - burst captures and band surveys with stitched spectra;
+  - SigMF export with one annotation per SSB;
   - a session format shared by Python and MATLAB;
   - a fake board for tests.
 
@@ -55,19 +60,21 @@ Without hardware, replay the included sample:
 
 ```bash
 git clone --recurse-submodules <this repo> && cd esp32-5g-sniffer
-python3 -m venv .venv_local && .venv_local/bin/pip install -r requirements.txt
+python3 -m venv .venv_local && .venv_local/bin/pip install -e .   # or: pip install -r requirements.txt
 .venv_local/bin/python -m capture.ssb_live --replay samples/ssbdet_pci165_150cuts
-.venv_local/bin/python -m unittest discover -s tests -t .        # 25 tests; GUI tests need xvfb-run
+.venv_local/bin/python -m capture.ssb_monitor --replay samples/ssbdet_pci165_150cuts --speed 0 --stdout
+.venv_local/bin/python -m unittest discover -s tests -t .        # GUI tests need xvfb-run
 ```
 
 With an ESP32-C5 board:
 
 ```bash
 firmware/fw.sh build && firmware/fw.sh flash /dev/ttyACM0       # needs the pinned ESP-IDF, see firmware/README.md
+.venv_local/bin/python -m capture.cell_scan --port /dev/ttyACM0 --freq 2131 2670             # which cells are there?
 .venv_local/bin/python -m capture.ssb_live --port /dev/ttyACM0 --freq 2131 --ssb 2125.45
 ```
 
-`--freq` is the LO in whole MHz; the C5 tunes 2130–2730 and 4790–5990 MHz. `--ssb` is the SSB centre frequency (SS_REF): take it from a phone app that shows the NR-ARFCN of your serving cell, or from a band survey (`docs/host_tools.md`). Without `--nid2`/`--cfo` the live view scans for the strongest cell at that frequency first.
+`--freq` is the LO in whole MHz; the C5 tunes 2130–2730 and 4790–5990 MHz. `--ssb` is the SSB centre frequency (SS_REF), from the cell scanner, a phone app that shows the NR-ARFCN of your serving cell, or `--ssb auto`. Without `--nid2`/`--cfo` the live view finds the strongest cell at that frequency first.
 
 ## Documentation
 
@@ -75,10 +82,10 @@ firmware/fw.sh build && firmware/fw.sh flash /dev/ttyACM0       # needs the pinn
 |---|---|
 | [docs/hardware.md](docs/hardware.md) | the ESP32-C5 as a receiver: tuning ranges, capture modes, crystal behaviour, USB quirks, which 5G bands it can reach |
 | [docs/firmware.md](docs/firmware.md) | building and flashing; SSBDET from the host side (protocol in [the fork's docs/ssbdet.md](firmware/espsoup-firmware/docs/ssbdet.md)) |
-| [docs/host_tools.md](docs/host_tools.md) | all commands: captures, `ssb-stream`, the live view, band surveys, the session format, the MATLAB tools, tests |
+| [docs/host_tools.md](docs/host_tools.md) | all commands: captures, `ssb-stream`, the cell scanner, the live view, the monitor, SigMF export, band surveys, the session format, the MATLAB tools, tests |
 | [docs/receiver.md](docs/receiver.md) | the NR receive chain and its pitfalls (the TS 38.211 symbol phase, the 7 kHz CFO ambiguity, timing) and how it is validated |
 | [docs/results.md](docs/results.md) | measurements: first light in n1, on-chip detection, live runs, the band survey with NR in n7, the crystal |
-| [docs/roadmap.md](docs/roadmap.md) | feature ideas |
+| [docs/roadmap.md](docs/roadmap.md) | feature ideas and what is done |
 
 ## Requirements
 

@@ -7,8 +7,8 @@ ESP-SDR (ESPARGOS team) reads raw I/Q from the Wi-Fi/Bluetooth receiver of ESP32
 | | |
 |---|---|
 | Exact tuning (`FREQ`, whole MHz) | **2130–2730 MHz** and 4790–5745 MHz |
-| Wi-Fi-driver tuning path (`TUNEM`, ESPsoup) | 4790–5990 MHz exact; the normal path is about 20 dB weaker above 5.75 GHz |
-| 1 kHz tuning steps | `FREQK` (ESPsoup; not used by our tools yet) |
+| Tuning path above 3 GHz | ESPsoup uses the Wi-Fi-driver path there by default (`TUNEM 4`, auto): exact up to 5990 MHz. The upstream path would be about 20 dB weaker above 5.75 GHz |
+| 1 kHz tuning steps | `FREQK` (ESPsoup) is only approximate (ESPsoup measured +100 kHz → −88 kHz, about ±30 kHz), which would corrupt CFO and crystal measurements. Our tools tune whole MHz and shift digitally, which is exact |
 | Below 2130 MHz | the C5 has no 5/6 LO divider: lower `FREQ` values end up near 2.2 GHz |
 
 ESP-SDR's over-the-air CW test of other chips, for comparison: the ESP32, C2, C3, C6, S2 and S3 reach down to 1.85–1.95 GHz (all of band n1), none reached 3.05 GHz. **No ESP32 reaches n78 (3.3–3.8 GHz).**
@@ -53,7 +53,7 @@ So the crystal moves by several ppm with temperature, and has jumped across rese
 
 - **Device:** native USB-Serial/JTAG, `/dev/ttyACM0`, ID `303a:1001`; also stable under `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<MAC>-if00`.
 - **Plugging in:** the firmware often does not answer until the chip is reset once. `capture/ssb_live.py` does this through RTS (`EspSdr.hard_reset()`, nothing is written).
-- **Spontaneous resets:** one board did this on one laptop port and not on another; when the board resets, it re-enumerates on USB. The live view reconnects by itself. Possible causes: power, cable, or ModemManager.
+- **Spontaneous resets:** one board did this on one laptop port and not on another; when the board resets, it re-enumerates on USB. The live view reconnects by itself. Possible causes: power, cable, or ModemManager. Firmware version 3 answers `BOOT?` with the reset reason (e.g. `brownout`), and the live view and monitor log it at every reconnect.
 - **ModemManager:** tell it to ignore Espressif devices (udev rule in [firmware/README.md](../firmware/README.md)).
 
 ## Antenna and levels

@@ -173,10 +173,11 @@ def cmd_ssb_stream(args):
     elif args.gain is not None:
         args.gain = int(args.gain)
     offset = int(round((args.ssb - args.freq[0]) * 1e6))
+    nid2 = 3 if str(args.nid2).lower() == "auto" else int(args.nid2)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     folder = Path(args.out) / (f"{stamp}_{args.label}" if args.label else f"{stamp}_ssbdet")
     settings = {"mode": "ssbdet", "freq_mhz": args.freq[:1], "ssb_mhz": args.ssb, "offset_hz": offset,
-                "nid2": args.nid2, "cfo_hz": args.cfo, "rate_msps": args.rate, "rate_code": rate, "bits": args.bits,
+                "nid2": nid2, "cfo_hz": args.cfo, "dec": args.dec, "cfo_span_hz": args.cfo_span, "rate_msps": args.rate, "rate_code": rate, "bits": args.bits,
                 "gain": args.gain, "bandwidth_mhz": args.bandwidth, "thr": args.thr, "pre_us": args.pre,
                 "post_us": args.post, "period_ms": args.period, "every": args.every, "track": not args.no_track,
                 "count": args.count, "duration_s": args.duration, "label": args.label, "note": args.note,
@@ -187,9 +188,10 @@ def cmd_ssb_stream(args):
     nframes, modes, bad = 0, {"A": 0, "T": 0}, 0
     stop = {"now": False}
     try:
-        for kind, item in ssb_stream(sdr, rate, offset, args.nid2, args.cfo, int(round(args.thr * 10)), args.pre,
+        for kind, item in ssb_stream(sdr, rate, offset, nid2, args.cfo, int(round(args.thr * 10)), args.pre,
                                      args.post, int(args.period * 1000), args.bits, args.every, args.count,
-                                     not args.no_track, args.duration, stop=lambda: stop["now"]):
+                                     not args.no_track, args.duration, stop=lambda: stop["now"],
+                                     dec=args.dec, cfo_span=args.cfo_span):
             if kind == "start":
                 print(item)
                 continue
@@ -264,8 +266,10 @@ def main(argv=None):
     common(s)
     rx(s)
     s.add_argument("--ssb", type=float, required=True, help="SSB centre in MHz, e.g. 2125.45")
-    s.add_argument("--nid2", type=int, required=True, help="PSS root of the cell (PCI mod 3)")
+    s.add_argument("--nid2", required=True, help="PSS root of the cell (PCI mod 3), or 'auto' (firmware ssb3: search all)")
     s.add_argument("--cfo", type=int, default=0, help="expected CFO in Hz (crystal), tracked by the firmware")
+    s.add_argument("--cfo-span", type=int, default=0, help="ssb3: search the CFO +- this many Hz (5 kHz steps)")
+    s.add_argument("--dec", action="store_true", help="ssb3: cuts decimated to 5 MS/s (about 4x less data)")
     s.add_argument("--gain", default="auto", help="manual gain index or 'auto'")
     s.add_argument("--thr", type=float, default=14.0, help="PSS threshold (noise: mean 1)")
     s.add_argument("--pre", type=int, default=20, help="us kept before the SSB")

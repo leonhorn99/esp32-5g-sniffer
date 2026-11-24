@@ -43,6 +43,14 @@ PCI_COLORS = ("#2a6fdb", "#e07b00", "#1a9e5a", "#b23a9a", "#7a6a00", "#5a5a5a")
 SYM_COLORS = ("#2a6fdb", "#e07b00", "#1a9e5a", "#b23a9a")    # sent QPSK symbol (+,+) (+,-) (-,+) (-,-)
 
 
+def iq_scale(fmt: str, R: int = 1, gsh: int = 0) -> float:
+    """Factor from payload units to 10-bit ADC counts (full scale 512), for RSRP in dBFS:
+    CAP16 carries the top 8 of 10 bits (x4); a decimated cut (ssb3) is the DDC output, 3 bits
+    above the input (/8), shifted right by gsh (x 2^gsh)."""
+    s = 4.0 if fmt == "CAP16" else 1.0
+    return s * (2.0 ** gsh) / 8.0 if R > 1 else s
+
+
 # ============================================================================ worker process
 def _worker_init():
     try:
@@ -65,14 +73,22 @@ def decode_job(job: dict) -> list[dict]:
         # site (PCI 166 next to 165) send their SSBs together. The SSS threshold keeps out noise.
         cands = [(job["t_pss"], k, job["cfo"] or 0.0, job.get("stat") if k == job["nid2"] else None)
                  for k in [job["nid2"]] + [k for k in (0, 1, 2) if k != job["nid2"]]]
+    # ssb3 decimated cut: at fs / R already, SSB centre at 0 Hz, cfo_ddc removed by the chip
+    cfo_ddc = job.get("cfo_ddc") or 0
+    f_lo = job["f_ssb"] if (job.get("R") or 1) > 1 else job["f_lo"]
     out = []
     for t_pss, nid2, cfo, stat in cands:
-        r = nr.receive(x, fs, t_pss, job["f_ssb"], job["f_lo"], cfo=cfo, nid2=nid2, t_first_us=job.get("t_first_us"))
+        r = nr.receive(x, fs, t_pss, job["f_ssb"], f_lo, cfo=cfo - cfo_ddc, nid2=nid2, t_first_us=job.get("t_first_us"),
+                       scale=job.get("scale") or 1.0)
+        if r.get("cfo") is not None:
+            r["cfo"] += cfo_ddc
         if stat is None and job.get("t_pss") is not None and (r.get("pci") is None or (
                 not r["ok"] and (r.get("sss_stat") or 0) < EXTRA_SSS_THRESHOLD)):
             continue                                   # other N_ID2: nothing there
         keep = {k: r.get(k) for k in ("ok", "pci", "nid2", "issb", "hrf_dmrs", "cfo", "snr_db", "sss_stat", "mib",
-                                      "t_pss_us", "t_frame_us", "grid", "eq", "channel", "nvar", "error", "t_pss")}
+                                      "t_pss_us", "t_frame_us", "grid", "eq", "channel", "nvar", "error", "t_pss",
+                                      "rsrp_dbfs")}
+        keep["pci_chip"] = job.get("pci_chip") if stat is not None else None
         keep.update(seq=job.get("seq"), mode=job.get("mode"), stat=stat, cfo_in=cfo, f_ssb=job["f_ssb"],
                     epoch=job.get("epoch", 0))
         if r["ok"]:
@@ -141,7 +157,7 @@ class LiveSource(Source):
         from .session import SsbRecorder
         a = self.args
         rate = rate_code_for(a.rate * 1e6)
-        offset = int(round((a.ssb - a.freq) * 1e6))
+        offset = None if a.ssb == "auto" else int(round((a.ssb - a.freq) * 1e6))
         gain, nid2, cfo = a.gain, a.nid2, a.cfo
         rec, configured, idle_runs = None, False, 0
         try:
@@ -150,6 +166,9 @@ class LiveSource(Source):
                 if sdr is None:
                     return
                 try:
+                    if device.get("boot"):
+                        self.say(f"board start reason: {device['boot']}")      # e.g. brownout after a reset
+                    v3 = "SSBDET3" in sdr.caps
                     if not configured:
                         self.say(f"{sdr.info_line}  {device.get('fwopt') or ''}")
                         if "SSBDET" not in sdr.caps:
@@ -159,9 +178,28 @@ class LiveSource(Source):
                             gain, _ = pick_gain(sdr, a.freq, rate, 10, a)
                         gain = int(gain)
                     _setup(sdr, a.freq, a, gain)
+                    if offset is None:
+                        # --ssb auto: search the whole SSB raster around the LO on the PC first
+                        from .cell_scan import scan_lo
+                        self.say(f"cell scan: all GSCN positions within +-6.1 MHz of {a.freq} MHz, "
+                                 f"{a.scan_bursts} bursts, CFO {cfo or 0:+.0f} +- {a.cfo_span} Hz")
+                        cells = scan_lo(sdr, a.freq, rate, a.scan_bursts, self.pool, cfo or 0, a.cfo_span,
+                                        say=self.say, stop=self.stop_flag.is_set)
+                        if self.stop_flag.is_set():
+                            return
+                        if not cells:
+                            raise RuntimeError("cell scan found no SSB near this LO: try another --freq")
+                        for c in cells[:5]:
+                            self.say(f"  {c['f_ssb_mhz']:.3f} MHz PCI {c['pci']}: {c['ssbs']} SSBs, {c['mibs']} MIBs, "
+                                     f"SNR {c['snr_db']:+.1f} dB")
+                        best = cells[0]
+                        a.ssb = best["f_ssb_mhz"]
+                        offset = int(round((a.ssb - a.freq) * 1e6))
+                        nid2, cfo = best["pci"] % 3, best["cfo_hz"] if best["cfo_hz"] is not None else (cfo or 0)
+                        self.say(f"tracking PCI {best['pci']} at {a.ssb:.3f} MHz")
                     if not configured:
                         self.say(f"LO {a.freq} MHz, gain index {gain}")
-                        if nid2 is None or cfo is None:
+                        if (nid2 is None or cfo is None) and not v3:
                             nid2, cfo = self.scan(sdr, rate, nid2)
                             if self.stop_flag.is_set():
                                 return
@@ -179,16 +217,23 @@ class LiveSource(Source):
                             cfg["record"] = str(rec.folder.relative_to(ROOT))
                         self.out.put(cfg)
                         configured = True
-                    elif idle_runs >= 2:
+                    elif idle_runs >= 2 and not v3:
                         self.say("no SSB in two runs: scanning for the cell again (the CFO may have drifted)")
                         nid2, cfo = self.scan(sdr, rate, None)
                         idle_runs = 0
                         if self.stop_flag.is_set():
                             return
                     idle = False
-                    for kind, item in ssb_stream(sdr, rate, offset, nid2, int(round(cfo)), int(round(a.thr * 10)),
+                    # ssb3: the chip finds the cell itself (all N_ID2 when unknown, CFO +- span: the crystal
+                    # moves by several ppm across resets), and sends decimated cuts (4x less data)
+                    span = a.cfo_span if v3 else 0
+                    run_nid2 = (3 if nid2 is None else nid2) if v3 else nid2
+                    if v3 and nid2 is None:
+                        self.say(f"cell search on the chip: all N_ID2, CFO {cfo or 0:+.0f} +- {span} Hz")
+                    for kind, item in ssb_stream(sdr, rate, offset, run_nid2, int(round(cfo or 0)), int(round(a.thr * 10)),
                                                  a.pre, a.post, int(a.period * 1000), a.bits, a.every, 0, True, None,
-                                                 stop=self.stop_flag.is_set, idle_timeout=15.0):
+                                                 stop=self.stop_flag.is_set, idle_timeout=None if v3 else 15.0,
+                                                 dec=v3 and not a.raw_cuts, cfo_span=span):
                         if kind == "idle":
                             idle = True
                             idle_runs += 1
@@ -203,13 +248,16 @@ class LiveSource(Source):
                         f = item
                         idle_runs = 0
                         cfo = f.cfo_hz                 # restart from here after a reset: the crystal drifts
+                        nid2 = f.nid2
                         if rec:
                             rec.add(f)
                         self.out.put({"kind": "frame", "seq": f.seq, "mode": f.mode, "stat": f.stat, "nid2": f.nid2,
-                                      "cfo": f.cfo_hz, "fs": f.fs, "crc_ok": f.crc_ok, "host_time": f.host_time,
-                                      "t_pss_chip_us": f.t0_us + (f.flip + f.pss_idx) / f.fs * 1e6,
-                                      "iq": f.iq() if f.n and f.crc_ok else None, "t_pss": f.pss_idx - f.start,
-                                      "t_first_us": f.t_first_us, "f_ssb": a.ssb * 1e6, "f_lo": a.freq * 1e6})
+                                      "cfo": f.cfo_hz, "fs": f.fs_cut, "crc_ok": f.crc_ok, "host_time": f.host_time,
+                                      "t_pss_chip_us": f.t0_us + f.t0_sub_ns / 1000 + (f.flip + f.pss_idx) / f.fs * 1e6,
+                                      "iq": f.iq() if f.n and f.crc_ok else None, "t_pss": f.pss_in_cut,
+                                      "t_first_us": f.t_first_us, "f_ssb": a.ssb * 1e6, "f_lo": a.freq * 1e6,
+                                      "R": f.R, "cfo_ddc": f.cfo_ddc_hz, "pci_chip": f.pci,
+                                      "scale": iq_scale(f.fmt, f.R, f.gsh)})
                     if not idle:
                         return                                   # stopped normally
                 except (OSError, TimeoutError, EspSdrError) as e:  # serial.SerialException is an OSError
@@ -336,12 +384,14 @@ class ReplaySource(Source):
                     time.sleep(min(0.05, target - time.monotonic()))
             while self.busy() and not self.stop_flag.is_set():   # replay never skips cuts
                 time.sleep(0.02)
+            R = rec.get("ssb_R", 1) or 1
             ev = {"kind": "frame", "seq": rec.get("seq", rec["idx"]), "mode": rec.get("ssb_mode", "R"),
                   "stat": rec.get("ssb_stat"), "nid2": rec.get("ssb_nid2"), "cfo": rec.get("ssb_cfo_hz"),
                   "fs": rec["fs"], "crc_ok": True, "host_time": time.time(), "iq": x,
                   "t_pss": rec.get("ssb_pss_in_cut") if ssbdet else None, "t_first_us": t,
                   "t_pss_chip_us": (t + rec["ssb_pss_in_cut"] / rec["fs"] * 1e6) if ssbdet and t is not None else None,
-                  "f_ssb": f_ssb, "f_lo": f_lo}
+                  "f_ssb": f_ssb, "f_lo": f_lo, "R": R, "cfo_ddc": rec.get("ssb_cfo_ddc_hz", 0),
+                  "pci_chip": rec.get("ssb_pci_chip"), "scale": iq_scale(rec["fmt"], R, rec.get("ssb_gsh", 0))}
             self.out.put(ev)
         while self.busy() and not self.stop_flag.is_set():
             time.sleep(0.05)
@@ -602,7 +652,8 @@ class App:
         if not self.args.replay and self.inflight >= MAX_BACKLOG:
             self.n_skipped += 1
             return
-        job = {k: ev.get(k) for k in ("iq", "fs", "t_pss", "nid2", "cfo", "f_ssb", "f_lo", "t_first_us", "seq", "mode", "stat")}
+        job = {k: ev.get(k) for k in ("iq", "fs", "t_pss", "nid2", "cfo", "f_ssb", "f_lo", "t_first_us", "seq", "mode", "stat",
+                                      "R", "cfo_ddc", "pci_chip", "scale")}
         job["epoch"] = self.epoch
         with self.lock:
             self.inflight += 1
@@ -654,6 +705,8 @@ class App:
                 f"cellBarred               {'barred' if m['cell_barred'] else 'notBarred'}\n"
                 f"intraFreqReselection     {m['intra_freq_reselection']}\n"
                 f"SNR per RE {r['snr_db']:+5.1f} dB   CFO {r['cfo'] / 1e3:+7.3f} kHz\n"
+                + (f"RSRP {r['rsrp_dbfs']:6.1f} dBFS (not calibrated)" if r.get("rsrp_dbfs") is not None else "RSRP -")
+                + (f"   chip PCI {r['pci_chip']}" if r.get("pci_chip") not in (None, -1) else "") + "\n"
                 f"PSS stat (chip) {r['stat'] if r['stat'] is not None else '-'}   SSS stat {r['sss_stat']:.0f}")
             if pci not in self.hidden:
                 self.add_log(f"{t:8.3f}s PCI {pci} i{r['issb']} SFN {m['sfn']:4d} h{m['hrf']} "
@@ -929,15 +982,15 @@ class App:
 
 
 # ============================================================================ main
-def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_source_args(p: argparse.ArgumentParser, label: str = "ssblive"):
+    """Board / replay options shared by the live view and the headless monitor."""
     p.add_argument("--port", help="board, e.g. /dev/ttyACM0 (live mode)")
     p.add_argument("--replay", help="session folder to replay instead of a board")
     p.add_argument("--speed", type=float, default=1.0, help="replay speed (1 = real time, 0 = as fast as decoded)")
     p.add_argument("--freq", type=int, help="LO in whole MHz (live)")
-    p.add_argument("--ssb", type=float, help="SSB centre (SS_REF) in MHz, e.g. 2125.45")
-    p.add_argument("--nid2", type=int, default=None, help="PSS root of the cell; omit to scan")
-    p.add_argument("--cfo", type=float, default=None, help="CFO in Hz to start from (crystal); omit to scan")
+    p.add_argument("--ssb", help="SSB centre (SS_REF) in MHz, e.g. 2125.45, or 'auto' (scan the raster first)")
+    p.add_argument("--nid2", type=int, default=None, help="PSS root of the cell; omit to search")
+    p.add_argument("--cfo", type=float, default=None, help="CFO in Hz to start from (crystal); omit to search")
     p.add_argument("--gain", default="auto", help="manual gain index or 'auto'")
     p.add_argument("--rate", type=float, default=20, help="MS/s")
     p.add_argument("--bits", type=int, choices=(8, 10), default=8)
@@ -945,22 +998,39 @@ def main(argv=None):
     p.add_argument("--pre", type=int, default=20)
     p.add_argument("--post", type=int, default=20)
     p.add_argument("--period", type=float, default=20.0, help="SSB period of the cell in ms")
-    p.add_argument("--every", type=int, default=1, help="raw cut of every k-th SSB")
-    p.add_argument("--scan-bursts", type=int, default=150, help="full bursts at most for the initial scan")
+    p.add_argument("--every", type=int, default=1, help="I/Q cut of every k-th SSB")
+    p.add_argument("--scan-bursts", type=int, default=150, help="full bursts at most for the PC scan (firmware before ssb3)")
+    p.add_argument("--cfo-span", type=int, default=30000, help="ssb3: CFO search span of the chip's cell search (Hz)")
+    p.add_argument("--raw-cuts", action="store_true", help="ssb3: raw cuts instead of decimated 5 MS/s cuts")
     p.add_argument("--record", action="store_true", help="store the cuts as a session in data/")
-    p.add_argument("--hide", type=int, nargs="*", default=[], help="PCIs to hide at the start (click in the Cells table to change)")
-    p.add_argument("--label", default="ssblive")
+    p.add_argument("--label", default=label)
     p.add_argument("--note", default="")
     p.add_argument("--workers", type=int, default=2, help="decoder processes")
+
+
+def check_source_args(p: argparse.ArgumentParser, a):
+    if not a.replay and not (a.port and a.freq):
+        p.error("live mode needs --port and --freq (or use --replay)")
+    if a.ssb is None and not a.replay:
+        a.ssb = "auto"
+    if a.ssb not in (None, "auto"):
+        a.ssb = float(a.ssb)
+    if a.replay and a.ssb == "auto":
+        p.error("--ssb auto needs a board")
+    a.bandwidth, a.dccal = None, False                  # used by capture_bursts._setup
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_source_args(p)
+    p.add_argument("--hide", type=int, nargs="*", default=[], help="PCIs to hide at the start (click in the Cells table to change)")
     p.add_argument("--no-autostart", dest="autostart", action="store_false")
     p.add_argument("--geometry", default="1560x920")
     p.add_argument("--dpi", type=int, default=90)
     p.add_argument("--quit-after", type=float, default=None, help="seconds; then save --snapshot and quit (tests)")
     p.add_argument("--snapshot", default=None, help="PNG path for --quit-after")
     a = p.parse_args(argv)
-    if not a.replay and not (a.port and a.freq and a.ssb):
-        p.error("live mode needs --port, --freq and --ssb (or use --replay)")
-    a.bandwidth, a.dccal = None, False                  # used by capture_bursts._setup
+    check_source_args(p, a)
     import signal
     import tkinter as tk
     root = tk.Tk()

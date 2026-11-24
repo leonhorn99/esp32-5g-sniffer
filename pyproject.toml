@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "esp32-5g-sniffer"
+version = "0.3.0"
+description = "Read 5G NR synchronisation blocks (PCI, SSB index, SFN, MIB, timing, CFO) with an ESP32-C5 Wi-Fi chip"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "matplotlib>=3.7", "pyserial>=3.5"]
+keywords = ["5G", "NR", "SSB", "MIB", "ESP32", "SDR", "PBCH", "polar code"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Ham Radio",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.optional-dependencies]
+gui = ["pillow>=10"]
+
+[project.scripts]
+esp32-capture = "capture.capture_bursts:main"
+esp32-ssb-live = "capture.ssb_live:main"
+esp32-ssb-monitor = "capture.ssb_monitor:main"
+esp32-cell-scan = "capture.cell_scan:main"
+esp32-band-survey = "capture.band_survey:main"
+esp32-sigmf-export = "capture.sigmf_export:main"
+
+[tool.setuptools]
+packages = ["capture"]

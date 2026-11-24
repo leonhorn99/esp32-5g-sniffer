@@ -193,6 +193,50 @@ class TestSsbStream(unittest.TestCase):
         finally:
             dev.stop()
 
+    def test_ssb3_fields_and_decimated_cuts(self):
+        """Firmware ssb3: sub-us t0, on-chip PCI, decimated cuts, BOOT?; the recorder stores the cut rate."""
+        from capture.esp_sdr import ssb_stream
+        from capture.session import SsbRecorder, load_session
+        dev = FakeDevice(caps=self.CAPS + ("SSBDET3", "BOOT"))
+        dev.start()
+        try:
+            sdr = EspSdr(dev.port, timeout=2.0)
+            device = sdr.connect()
+            self.assertEqual(device["boot"], "BOOT 1 poweron 12345678")
+            frames = [f for k, f in ssb_stream(sdr, 2, -5550000, 3, 11200, max_frames=4, dec=True, cfo_span=15000)
+                      if k == "frame"]
+            self.assertIn("SSBDET 2 -5550000 3 11200 140 20 20 20000 16 1 4 1 1 15000", dev.log)
+            f = frames[0]
+            self.assertEqual((f.pci, f.R, f.gsh, f.cfo_ddc_hz, f.t0_sub_ns), (165, 4, 2, 11000, 437))
+            self.assertEqual(f.fs_cut, 5e6)
+            self.assertAlmostEqual(f.t_first_us, f.t0_us + 0.437 + 1000 / 20e6 * 1e6)
+            self.assertAlmostEqual(f.pss_in_cut, (1094 - 1000) / 4)
+            with tempfile.TemporaryDirectory() as d:
+                rec = SsbRecorder(Path(d) / "s", device, {}, 2131, 50, None, 2)
+                for fr in frames:
+                    rec.add(fr)
+                rec.close()
+                meta, recs, iq = load_session(Path(d) / "s")
+                self.assertEqual(recs[0]["fs"], 5e6)
+                self.assertEqual(recs[0]["ssb_pss_in_cut"], 23.5)
+                self.assertEqual(recs[0]["ssb_pci_chip"], 165)
+            sdr.ser.close()
+        finally:
+            dev.stop()
+
+    def test_old_firmware_refuses_ssb3_options(self):
+        from capture.esp_sdr import EspSdrError, ssb_stream
+        dev = FakeDevice(caps=self.CAPS)
+        dev.start()
+        try:
+            sdr = EspSdr(dev.port, timeout=2.0)
+            sdr.connect()
+            with self.assertRaises(EspSdrError):
+                list(ssb_stream(sdr, 2, -5550000, 0, 11200, max_frames=2, dec=True))
+            sdr.ser.close()
+        finally:
+            dev.stop()
+
     def test_cli_session(self):
         from capture.capture_bursts import main
         dev = FakeDevice(caps=self.CAPS)

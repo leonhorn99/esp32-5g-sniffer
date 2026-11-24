@@ -26,6 +26,15 @@ from . import nr_pbch_tables as _T
 SCS = 15e3
 T_U = 1 / SCS                       # useful symbol length
 T_SYM = 2192 / 30.72e6              # normal-CP symbol (all four SSB symbols in case A)
+
+
+def t_sym(scs: float = SCS) -> float:
+    """Normal-CP OFDM symbol: (2048 + 144) samples at 2048 x SCS (all four SSB symbols have it)."""
+    return 2192 / (2048 * scs)
+
+
+def backoff(scs: float = SCS) -> float:
+    return 9 / (512 * scs)
 T_CP = 144 / 30.72e6
 BACKOFF = 9 / 7.68e6                # FFT window starts this far into the CP (as ssb_detect.m)
 PSS_K = np.arange(56, 183)          # PSS / SSS subcarriers
@@ -215,8 +224,8 @@ def bch_encode(mib24, sfn: int, hrf: int, kssb: int, pci: int) -> np.ndarray:
 
 
 def pbch_scrambling(pci: int, v: int) -> np.ndarray:
-    """TS 38.211 7.3.3.1, L_max 4: v = i_SSB mod 4."""
-    return gold(pci, 864 * 4)[864 * v:864 * (v + 1)]
+    """TS 38.211 7.3.3.1: v = i_SSB mod 4 for L_max 4, i_SSB mod 8 for L_max 8."""
+    return gold(pci, 864 * 8)[864 * v:864 * (v + 1)]
 
 
 def bch_decode(llr: np.ndarray, pci: int, list_length: int = 8) -> dict | None:
@@ -251,44 +260,58 @@ def parse_mib(mib24, sfn: int, hrf: int, kssb_msb: int, path_metric: float = flo
 
 
 # ----------------------------------------------------------------------------- timing
-def useful_start_s(symbol: int) -> float:
-    """Start of the useful part of OFDM symbol `symbol` (counted from the half-frame start), 15 kHz."""
+def useful_start_s(symbol: int, scs: float = SCS) -> float:
+    """Start of the useful part of OFDM symbol `symbol` (counted from the half-frame start).
+    CP in samples at 2048 x SCS: 144, and 144 + 16 x 2^mu for the first symbol of every 0.5 ms
+    (TS 38.211 5.3.1): symbols 0 and 7 of a slot at 15 kHz, symbol 0 at 30 kHz."""
+    mu = int(round(np.log2(scs / 15e3)))
     slot, l = divmod(symbol, 14)
-    cp = lambda m: 160 if m in (0, 7) else 144  # noqa: E731
-    return slot * 1e-3 + (sum(2048 + cp(m) for m in range(l)) + cp(l)) / 30.72e6
+    long_syms = {0, 7} if mu == 0 else {0}
+    cp = lambda k: 144 + 16 * 2 ** mu if k in long_syms else 144  # noqa: E731
+    return slot * 1e-3 / 2 ** mu + (sum(2048 + cp(k) for k in range(l)) + cp(l)) / (2048 * scs)
 
 
-SSB_FIRST_SYMBOL = (2, 8, 16, 22)   # case A, L_max 4
+def ssb_first_symbols(pattern: str = "A", lmax: int = 4) -> list[int]:
+    """First OFDM symbols of the SSB candidates in a half frame (TS 38.213 4.1)."""
+    if pattern in ("A", "C"):
+        return [s + 14 * n for n in range(lmax // 2) for s in (2, 8)]
+    if pattern == "B":
+        return [s + 28 * n for n in range(lmax // 4) for s in (4, 8, 16, 20)]
+    raise ValueError(f"block pattern {pattern}")
+
+
+SSB_FIRST_SYMBOL = tuple(ssb_first_symbols("A", 4))   # (2, 8, 16, 22)
 
 
 # ----------------------------------------------------------------------------- front end
-@lru_cache(maxsize=8)
-def _dft(fs: float) -> tuple[np.ndarray, int]:
-    m = int(round(T_U * fs))
-    w = np.exp(-2j * np.pi * np.outer(K_REL * SCS, np.arange(m)) / fs)
+@lru_cache(maxsize=16)
+def _dft(fs: float, scs: float = SCS) -> tuple[np.ndarray, int]:
+    m = int(round(fs / scs))
+    w = np.exp(-2j * np.pi * np.outer(K_REL * scs, np.arange(m)) / fs)
     return w, m
 
 
-@lru_cache(maxsize=8)
-def _pss_time(nid2: int, fs: float) -> np.ndarray:
+@lru_cache(maxsize=24)
+def _pss_time(nid2: int, fs: float, scs: float = SCS) -> np.ndarray:
     """Useful part of the PSS symbol at sample rate fs (SS_REF at 0 Hz)."""
-    w, m = _dft(fs)
+    w, m = _dft(fs, scs)
     return (pss(nid2) @ np.conj(w[PSS_K])) / m
 
 
-def grid(y: np.ndarray, fs: float, t_pss: float, f_rf: float) -> np.ndarray:
+def grid(y: np.ndarray, fs: float, t_pss: float, f_rf: float, scs: float = SCS) -> np.ndarray:
     """240 x 4 SSB grid from y (SS_REF at 0 Hz, CFO removed); t_pss = PSS useful start in
     samples (fractional). f_rf: absolute SS_REF frequency for the 38.211 symbol phase."""
-    w, m = _dft(fs)
+    w, m = _dft(fs, scs)
+    ts = t_sym(scs)
     g = np.zeros((240, 4), complex)
     for l in range(4):
-        t_us = t_pss + l * T_SYM * fs
-        n0 = int(round(t_us - BACKOFF * fs))
+        t_us = t_pss + l * ts * fs
+        n0 = int(round(t_us - backoff(scs) * fs))
         if n0 < 0 or n0 + m > len(y):
             raise ValueError("SSB not inside the cut")
         f = (w @ y[n0:n0 + m]) / m
-        g[:, l] = f * np.exp(2j * np.pi * K_REL * SCS * (t_us - n0) / fs) \
-            * np.exp(2j * np.pi * ((f_rf * l * T_SYM) % 1.0))
+        g[:, l] = f * np.exp(2j * np.pi * K_REL * scs * (t_us - n0) / fs) \
+            * np.exp(2j * np.pi * ((f_rf * l * ts) % 1.0))
     return g
 
 
@@ -306,18 +329,20 @@ def _smooth(vals: np.ndarray, ks: np.ndarray, half: int) -> tuple[np.ndarray, np
 
 
 def pss_search(x: np.ndarray, fs: float, offset_hz: float, nid2s=(0, 1, 2), cfo_max: float = 30e3,
-               cfo_step: float = 5e3, threshold: float = PSS_THRESHOLD, max_peaks: int = 6) -> list[dict]:
+               cfo_step: float = 5e3, threshold: float = PSS_THRESHOLD, max_peaks: int = 6,
+               scs: float = SCS) -> list[dict]:
     """PSS peaks in a whole burst: FFT correlation over N_ID2 and CFO hypotheses after a
     +-1.1 MHz brick-wall low-pass, statistic normalised to unit mean under white noise
     (as ssb_detect.m). offset_hz = SS_REF - LO. Returns dicts t_pss (samples), nid2, stat, cfo."""
     x = np.asarray(x, complex) - np.mean(x)
     n = np.arange(len(x))
     y = x * np.exp(-2j * np.pi * offset_hz * n / fs)
-    w, m = _dft(fs)
+    w, m = _dft(fs, scs)
+    bw = 1.1e6 * scs / SCS
     nf = 1 << int(np.ceil(np.log2(len(y) + m)))
     f = np.fft.fftfreq(nf, 1 / fs)
-    lp = np.abs(f) <= 1.1e6
-    beta = 2.2e6 / fs
+    lp = np.abs(f) <= bw
+    beta = 2 * bw / fs
     peaks = []
     best = {}
     for cfo in np.arange(-cfo_max, cfo_max + 1, cfo_step):
@@ -326,7 +351,7 @@ def pss_search(x: np.ndarray, fs: float, offset_hz: float, nid2s=(0, 1, 2), cfo_
         zl = np.fft.ifft(zf * lp)[:len(y)]
         e = np.convolve(np.abs(zl) ** 2, np.ones(m), "valid")
         for nid2 in nid2s:
-            r = _pss_time(nid2, fs)
+            r = _pss_time(nid2, fs, scs)
             c = np.fft.ifft(zf * np.conj(np.fft.fft(r, nf)))[:len(e)]
             st = np.abs(c) ** 2 * m * beta / (np.maximum(e, 1e-12) * np.sum(np.abs(r) ** 2))
             if nid2 not in best:
@@ -336,7 +361,7 @@ def pss_search(x: np.ndarray, fs: float, offset_hz: float, nid2s=(0, 1, 2), cfo_
                 upd = st > b
                 b[upd] = st[upd]
                 bc[upd] = cfo
-    sym = int(T_SYM * fs)
+    sym = int(t_sym(scs) * fs)
     for nid2, (st, cf) in best.items():
         st = st.copy()
         for _ in range(max_peaks):
@@ -363,9 +388,95 @@ def _refine_peak(y: np.ndarray, r: np.ndarray, t: float, fs: float, half_us: flo
     return float(lags[i])
 
 
+def gscn_raster(fmin: float, fmax: float) -> list[float]:
+    """NR synchronisation raster (TS 38.101-1 5.4.3.1): SS_REF frequencies (Hz) in [fmin, fmax].
+    Below 3 GHz N x 1200 kHz + M x 50 kHz (M = 1, 3, 5), above 3000 MHz + N x 1.44 MHz.
+    Band-specific GSCN subsets are not applied."""
+    out = []
+    for n in range(max(1, int(fmin // 1.2e6) - 1), int(fmax // 1.2e6) + 2):
+        for m in (1, 3, 5):
+            f = n * 1.2e6 + m * 50e3
+            if fmin <= f <= fmax and f < 3000e6:
+                out.append(f)
+    if fmax >= 3000e6:
+        for n in range(max(0, int((fmin - 3000e6) // 1.44e6) - 1), int((fmax - 3000e6) // 1.44e6) + 2):
+            f = 3000e6 + n * 1.44e6
+            if fmin <= f <= fmax:
+                out.append(f)
+    return sorted(out)
+
+
+@lru_cache(maxsize=16)
+def _raster_tables(fs: float, nf: int, nb: int, half: int, scs: float = SCS):
+    """PSS templates in the band bins of the raster search, and the noise normalisation."""
+    rel = np.arange(-half, half)
+    tmpl = []
+    for nid2 in range(3):
+        rb = np.zeros(nb, complex)
+        rb[rel % nb] = np.fft.fft(_pss_time(nid2, fs, scs), nf)[rel % nf]
+        tmpl.append((rb, float(np.sum(np.abs(np.fft.ifft(rb)) ** 2))))
+    return rel, tmpl
+
+
+def pss_search_raster(x: np.ndarray, fs: float, offsets_hz, cfos_hz, nid2s=(0, 1, 2),
+                      threshold: float = PSS_THRESHOLD, max_peaks: int = 4, bin_hz: float = 250.0,
+                      band_hz: float | None = None, scs: float = SCS) -> list[dict]:
+    """PSS search over many raster positions (offsets SS_REF - LO) and CFO hypotheses at once.
+    One FFT of the burst with bin_hz bins: GSCN offsets (multiples of 50 kHz) and CFO steps
+    (multiples of bin_hz) are then whole bins, and each hypothesis is a band of +-1.1 MHz cut
+    out of the same spectrum, correlated at band_hz (5 MS/s: 0.2 us lag steps; at 2.5 MS/s the
+    peak fell between lags and lost up to 2.7 dB) with one small inverse FFT.
+    Statistic as pss_search (unit-mean exponential under white noise); t_pss is in raw samples
+    (to 1/(band_hz) here, refine with receive()). Returns dicts f_off, t_pss, nid2, stat, cfo."""
+    x = np.asarray(x, complex)
+    x = x - np.mean(x)
+    band_hz = band_hz or 5e6 * scs / SCS
+    nf, nb = int(round(fs / bin_hz)), int(round(band_hz / bin_hz))
+    dec = nf // nb
+    _, m = _dft(fs, scs)
+    if nf < len(x) + m or nf % nb:
+        raise ValueError("burst too long for bin_hz, or band_hz does not divide fs")
+    half = int(round(1.1e6 * scs / SCS / bin_hz))
+    rel, tmpl = _raster_tables(fs, nf, nb, half, scs)
+    X = np.fft.fft(x, nf)
+    md = int(round(m / dec))
+    beta = 2 * half / nb                        # noise bandwidth of the band over the decimated rate
+    n_lag = (len(x) - m) // dec
+    sym = int(t_sym(scs) * fs / dec)
+    peaks = []
+    for off in offsets_hz:
+        best = {k: (np.full(n_lag, -1.0), np.zeros(n_lag)) for k in nid2s}
+        k_off = int(round(off / bin_hz))
+        for cfo in cfos_hz:
+            k0 = k_off + int(round(cfo / bin_hz))
+            yb = np.zeros(nb, complex)
+            yb[rel % nb] = X[(k0 + rel) % nf]
+            y = np.fft.ifft(yb)
+            e = np.convolve(np.abs(y[:n_lag + md]) ** 2, np.ones(md), "valid")[:n_lag]
+            for k in nid2s:
+                rb, er = tmpl[k]
+                c = np.fft.ifft(yb * np.conj(rb))[:n_lag]
+                st = np.abs(c) ** 2 * md * beta / (np.maximum(e, 1e-12) * er)
+                b, bc = best[k]
+                upd = st > b
+                b[upd] = st[upd]
+                bc[upd] = cfo
+        for k, (b, bc) in best.items():
+            b = b.copy()
+            for _ in range(max_peaks):
+                i = int(np.argmax(b))
+                if b[i] < threshold:
+                    break
+                peaks.append({"f_off": float(off), "t_pss": float(i * dec), "nid2": k, "stat": float(b[i]),
+                              "cfo": float(bc[i])})
+                b[max(0, i - sym):i + sym] = 0
+    return sorted(peaks, key=lambda p: (p["f_off"], p["t_pss"]))
+
+
 def receive(iq: np.ndarray, fs: float, t_pss: float, f_ssb: float, f_lo: float, cfo: float = 0.0,
             nid2: int | None = None, t_first_us: float | None = None, decode: bool = True,
-            list_length: int = 8) -> dict:
+            list_length: int = 8, scale: float = 1.0, scs: float = SCS, lmax: int = 4,
+            pattern: str | None = None) -> dict:
     """Process one SSB. iq: raw samples; t_pss: PSS useful start (samples, from the
     firmware or pss_search); cfo: CFO estimate (Hz) to start from. Returns a dict with
     the grid, channel, PCI, SSB index, CFO, SNR, MIB (or None) and timing."""
@@ -380,15 +491,16 @@ def receive(iq: np.ndarray, fs: float, t_pss: float, f_ssb: float, f_lo: float, 
 
     # CFO inside the PSS symbol (two halves: free of the 38.211 symbol phase)
     y = mixed(cfo)
-    w, m = _dft(fs)
+    pattern = pattern or ("A" if scs == SCS else "C")
+    w, m = _dft(fs, scs)
     p0 = int(round(t_pss))
     if p0 < 0 or p0 + m > len(y):
         out["error"] = "PSS outside the cut"
         return out
     if nid2 is None:
-        nid2 = int(np.argmax([abs(np.vdot(_pss_time(k, fs), y[p0:p0 + m])) for k in range(3)]))
+        nid2 = int(np.argmax([abs(np.vdot(_pss_time(k, fs, scs), y[p0:p0 + m])) for k in range(3)]))
         out["nid2"] = nid2
-    r = _pss_time(nid2, fs)
+    r = _pss_time(nid2, fs, scs)
     h = m // 2
     c1 = np.vdot(r[:h], y[p0:p0 + h])
     c2 = np.vdot(r[h:], y[p0 + h:p0 + m])
@@ -399,7 +511,7 @@ def receive(iq: np.ndarray, fs: float, t_pss: float, f_ssb: float, f_lo: float, 
     # timing against 0.29 us for this, session 20261123_140216_ssbdet_v2)
     t_pss = _refine_peak(y, r, t_pss, fs)
     try:
-        g = grid(y, fs, t_pss, f_ssb)
+        g = grid(y, fs, t_pss, f_ssb, scs)
     except ValueError as e:
         out["error"] = str(e)
         return out
@@ -418,9 +530,9 @@ def receive(iq: np.ndarray, fs: float, t_pss: float, f_ssb: float, f_lo: float, 
     pci = 3 * int(order[0]) + nid2
     out["pci"] = pci
     # CFO refinement from the PSS -> SSS phase (two symbols; unambiguous within +-3.5 kHz)
-    cfo += np.angle(cs[order[0]]) / (2 * np.pi * 2 * T_SYM)
+    cfo += np.angle(cs[order[0]]) / (2 * np.pi * 2 * t_sym(scs))
     y = mixed(cfo)
-    g = grid(y, fs, t_pss, f_ssb)
+    g = grid(y, fs, t_pss, f_ssb, scs)
     out.update(grid=g, cfo=float(cfo), t_pss=float(t_pss))
     gf = g.flatten(order="F")
     pbch_i, dmrs_i = ssb_indices(pci % 4)
@@ -463,20 +575,28 @@ def receive(iq: np.ndarray, fs: float, t_pss: float, f_ssb: float, f_lo: float, 
             best = res
         if not decode:
             break
-        v = int(ibar) % 4
+        v = int(ibar) % lmax        # PBCH scrambling: 2 LSBs of i_SSB (L_max 4), 3 LSBs (L_max 8)
         mib = bch_decode(llr * (1 - 2.0 * pbch_scrambling(pci, v)), pci, list_length)
         if mib is not None:
             best = res
             best["mib"] = mib
             break
     out.update({k: best[k] for k in ("ibar", "snr_db", "channel", "eq", "nvar")})
-    out["issb"] = out["ibar"] % 4
-    out["hrf_dmrs"] = out["ibar"] // 4
+    # SS-RSRP (TS 38.215: mean power of the SSS resource elements), from the channel estimate on
+    # the SSS subcarriers, in dB relative to the 10-bit ADC full scale (512) per resource element;
+    # scale converts the payload units to 10-bit counts. Not calibrated: the gain index adds an
+    # unknown, frequency-dependent gain.
+    out["rsrp_dbfs"] = float(10 * np.log10(np.mean(np.abs(best["channel"][PSS_K]) ** 2) * scale ** 2 / 512 ** 2 + 1e-30))
+    # DM-RS: i_bar = i_SSB + 4 n_hf for L_max 4; i_bar = i_SSB (3 bits) for L_max 8, half frame from the MIB
+    out["issb"] = out["ibar"] % 4 if lmax == 4 else out["ibar"]
+    out["hrf_dmrs"] = out["ibar"] // 4 if lmax == 4 else None
     out["mib"] = best.get("mib")
     out["ok"] = out["mib"] is not None
     hrf = out["mib"]["hrf"] if out["ok"] else out["hrf_dmrs"]
+    first = ssb_first_symbols(pattern, lmax)
     if t_first_us is not None:
         t_pss_us = t_first_us + t_pss / fs * 1e6
         out["t_pss_us"] = t_pss_us
-        out["t_frame_us"] = t_pss_us - 1e6 * useful_start_s(SSB_FIRST_SYMBOL[out["issb"]]) - 5000 * hrf
+        out["t_frame_us"] = (t_pss_us - 1e6 * useful_start_s(first[out["issb"]], scs) - 5000 * hrf
+                             if hrf is not None and out["issb"] < len(first) else None)
     return out

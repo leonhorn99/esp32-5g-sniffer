@@ -5,7 +5,16 @@
 - Building, flashing, the pinned ESP-IDF and USB quirks: [firmware/README.md](../firmware/README.md).
 - The full SSBDET protocol and algorithm: [firmware/espsoup-firmware/docs/ssbdet.md](../firmware/espsoup-firmware/docs/ssbdet.md).
 
-What our branch adds to ESPsoup 0.7.1 is one command, `SSBDET`: on-chip detection of the SSBs of one NR cell. The board sends only the raw I/Q around each SSB, with its timestamp.
+What our branch adds to ESPsoup 0.7.1 is one command, `SSBDET`: on-chip detection of the SSBs of one NR cell. The board sends only the I/Q around each SSB, with its timestamp.
+
+**Version 3** (`FWOPT 0.7.1-dev+ssb3`, CAPS `SSBDET3 BOOT`) adds:
+- a **cell search on the chip**: all N_ID2 (`nid2` 3) and CFO hypotheses (`cfo_span`). The host no longer needs to know the cell or the crystal error.
+- the **PCI from the on-chip SSS** in every frame;
+- **decimated cuts** at 5 MS/s that keep the whole SSB, about 4× less data than raw cuts;
+- **sub-µs timestamps** from the 16 MHz systimer (62.5 ns steps; the 1 µs steps of version 2 were the 0.29 µs RMS timing floor);
+- **`BOOT?`**, the chip's reset reason.
+
+The host tools use all of it automatically when the board reports `SSBDET3`.
 
 ## Using SSBDET from the host
 
@@ -14,6 +23,8 @@ Command line (stores the cuts as a session in `data/`):
 ```bash
 .venv_local/bin/python -m capture.capture_bursts ssb-stream --port /dev/ttyACM0 \
     --freq 2131 --ssb 2125.45 --nid2 0 --cfo 12000 --gain 76 --duration 30 --label mycell
+.venv_local/bin/python -m capture.capture_bursts ssb-stream --port /dev/ttyACM0 \
+    --freq 2131 --ssb 2125.45 --nid2 auto --cfo 0 --cfo-span 30000 --dec --duration 30    # version 3
 ```
 
 Live view (decodes and shows every SSB; `--record` stores them):
@@ -32,6 +43,8 @@ for kind, item in ssb_stream(sdr, rate_code=2, offset_hz=-5_550_000, nid2=0, cfo
         print(item.seq, item.mode, item.stat, item.cfo_hz)
     else:                     # "start", "end", "idle" (alive, no SSB), "text" (board log lines)
         print(kind, item)
+# version 3: ssb_stream(sdr, 2, -5_550_000, nid2=3, cfo_hz=0, cfo_span=30_000, dec=True) searches the cell on the
+# chip; frames then carry .pci, .sss, .t0_sub_ns, and decimated cuts have .R > 1 (.fs_cut, .pss_in_cut, .cfo_ddc_hz)
 ```
 
 **What the parameters mean:**
@@ -47,11 +60,12 @@ for kind, item in ssb_stream(sdr, rate_code=2, offset_hz=-5_550_000, nid2=0, cfo
 | cut length | 0.33 ms: the SSB plus 20 µs on either side, 13 KB at 8 bit |
 | tracking misses | 7 in 743 over 30 s |
 | on-chip time per SSB | decimation about 5 ms, PSS search 1–2 ms (tracking), send about 18 ms |
-| timestamp | 1 µs resolution (`esp_timer`), which sets the 0.3 µs RMS timing floor |
+| timestamp | version 2: 1 µs resolution (`esp_timer`), the 0.3 µs RMS timing floor; version 3: 62.5 ns steps |
 
 **Limits:**
 - One cell per run, 15 kHz SSB spacing only.
-- The cell's N_ID2 and a rough CFO must be known; the host scans for them.
+- Version 2 needs the cell's N_ID2 and a rough CFO (the host scans for them); version 3 searches itself.
+- Version 3 was checked on the PC with the identical DSP code, not yet on the chip.
 
 Ideas for the firmware are in [roadmap.md](roadmap.md).
 
@@ -60,7 +74,8 @@ Ideas for the firmware are in [roadmap.md](roadmap.md).
 `ssb_dsp.h` has no ESP-IDF dependency, so `firmware/espsoup-firmware/tests/ssb/host_ssb.c` compiles it on the PC. `tests/test_ssb_onchip_dsp.py` runs it on recorded bursts (the sample `samples/n1_2131_20M_30bursts`, or the full captures) and compares with the MATLAB detector:
 - 18/18 SSBs found;
 - positions within 0.17 µs;
-- no false detection.
+- no false detection;
+- version 3: PCI 165 from the on-chip SSS in 18/18; the cell search from 0 kHz finds all 18 (CFO +10.75 kHz, true about +10.8 kHz); the 5 MS/s cuts decode 18/18 MIBs in the NumPy receiver.
 
 Run it after every change to `ssb_dsp.h` and before flashing:
 

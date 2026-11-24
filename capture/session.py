@@ -100,15 +100,20 @@ class SsbRecorder:
         """f: esp_sdr.SsbFrame. Returns the event line written."""
         ev = {"seq": f.seq, "n": f.n, "t0_us": f.t0_us, "flip": f.flip, "start": f.start, "fs": f.fs,
               "mode": f.mode, "stat": f.stat, "nid2": f.nid2, "cfo_hz": f.cfo_hz, "pss_idx": f.pss_idx,
-              "t_pss_us": f.t0_us + (f.flip + f.pss_idx) / f.fs * 1e6, "crc_ok": f.crc_ok, "host_time": f.host_time}
+              "t_pss_us": f.t0_us + f.t0_sub_ns / 1000 + (f.flip + f.pss_idx) / f.fs * 1e6, "crc_ok": f.crc_ok,
+              "host_time": f.host_time, "t0_sub_ns": f.t0_sub_ns, "pci": f.pci, "sss": f.sss, "R": f.R,
+              "gsh": f.gsh, "cfo_ddc_hz": f.cfo_ddc_hz}
         if f.n:
             b = Burst(fmt=f.fmt, n=f.n, rate_code=self.rate_code, payload=f.payload, crc_ok=f.crc_ok, crc32=f.crc32,
                       capture_us=0, t0_us=round(f.t_first_us, 3), seq=f.seq, lag=f.flip, reply=f.reply,
                       host_time=f.host_time)
             rec = self.writer.add(b, freq_mhz=self.freq_mhz, gain=self.gain, bandwidth_mhz=self.bandwidth_mhz,
                                   extra={"ssb_mode": f.mode, "ssb_stat": f.stat, "ssb_nid2": f.nid2,
-                                         "ssb_cfo_hz": f.cfo_hz, "ssb_pss_in_cut": f.pss_idx - f.start,
-                                         "capture_t0_us": f.t0_us, "cut_start": f.start})
+                                         "ssb_cfo_hz": f.cfo_hz, "ssb_pss_in_cut": f.pss_in_cut,
+                                         "capture_t0_us": f.t0_us, "cut_start": f.start,
+                                         # ssb3: decimated cuts run at fs / R, centred, CFO cfo_ddc removed
+                                         "fs": f.fs_cut, "ssb_R": f.R, "ssb_gsh": f.gsh, "ssb_cfo_ddc_hz": f.cfo_ddc_hz,
+                                         "ssb_pci_chip": f.pci, "ssb_sss_chip": f.sss, "t0_sub_ns": f.t0_sub_ns})
             ev["burst_idx"] = rec["idx"]
         self.events.write(json.dumps(ev) + "\n")
         return ev

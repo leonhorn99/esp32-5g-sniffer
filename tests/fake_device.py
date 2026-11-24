@@ -74,17 +74,22 @@ class FakeDevice(threading.Thread):
             except OSError:
                 pass
 
-    def _ssb_emit(self, fs, bits, max_frames):
-        """SSBDET run: one frame every 5 ms (pattern payload of 600 samples) until stopped."""
+    def _ssb_emit(self, fs, bits, max_frames, dec=False, nid2=0):
+        """SSBDET run: one frame every 5 ms (pattern payload of 600 samples, 150 if decimated)
+        until stopped. With SSBDET3 in the caps the frames carry the ssb3 fields."""
         fmt = "CAP16" if bits == 16 else "CAP20"
+        v3 = "SSBDET3" in self.caps
         k = 0
         while not self._ssb_stop.is_set() and (not max_frames or k < max_frames):
-            n = 0 if k % 3 == 2 else 600              # every third frame header-only
+            n = 0 if k % 3 == 2 else (150 if dec else 600)    # every third frame header-only
             i, q = pattern(n, fmt, k)
             payload = pack_iq(i, q, fmt) if n else b""
             crc = zlib.crc32(payload) & 0xFFFFFFFF if n else 0
             mode = "A" if k == 0 else "T"
-            self._line(f"SSBF {k + 1} {n} {crc:08x} {self.t_us} 0 1000 {fs} {bits} {mode} 215 0 11250 1094")
+            head = f"SSBF {k + 1} {n} {crc:08x} {self.t_us} 0 1000 {fs} {bits} {mode} 215 {nid2 if nid2 < 3 else 0} 11250 1094"
+            if v3:    # t0_sub_ns pci sss_x10 R gsh cfo_ddc_hz
+                head += f" 437 165 280 {4 if dec else 1} {2 if dec else 0} {11000 if dec else 0}"
+            self._line(head)
             if n:
                 self._send(payload)
             self.t_us += 20_000
@@ -116,6 +121,8 @@ class FakeDevice(threading.Thread):
                        '20000000,10000000,8000000,4000000],"bits":[8,10],"maxSamples":%d}' % self.max_samples)
         elif c == "VERSION?":
             self._line('VERSION {"git":"fake","built":"2026-11-19"}')
+        elif c == "BOOT?" and "BOOT" in self.caps:
+            self._line("BOOT 1 poweron 12345678")
         elif c == "FWOPT?" and "FWOPT" in self.caps:
             self._line("FWOPT 0.7.1-dev espsoup rx-only C5 (fake)")
         elif c == "TRANSPORT?":
@@ -146,7 +153,8 @@ class FakeDevice(threading.Thread):
             self._line(f"OK SSBDET {fs} {fs // 4_000_000} {6 * (fs // 4_000_000) + 1} 493 140 20000")
             self._ssb_stop = threading.Event()
             self._ssb_active = True
-            threading.Thread(target=self._ssb_emit, args=(fs, bits, max_frames), daemon=True).start()
+            dec = len(a) > 12 and a[12] == 1
+            threading.Thread(target=self._ssb_emit, args=(fs, bits, max_frames, dec, a[2]), daemon=True).start()
         elif c in ("CAP16", "CAP20", "CAPT16", "CAPT20"):
             timed = c.startswith("CAPT")
             if timed and "CAPT" not in self.caps:

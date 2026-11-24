@@ -71,7 +71,11 @@ The setup for everything on this page:
 
 With on-chip detection, PCI 317 gave 306 SSBs in 15 s.
 
-**A repeat on 24 Nov at 05:40:** PCI 317 was 6 dB weaker, and the band 7 carriers were not visible. The board was at a different place, and the capture was early in the morning (capacity carriers may be off).
+**A repeat on 24 Nov at 05:40**, with the board at another place:
+- **Same result:** PCI 317 in n7 (3 MIBs, +4.3 dB, 6 dB weaker), nothing at 30 kHz, nothing at 4.8–6 GHz.
+- **The band 7 carriers were not visible in the spectrum.** Possible reasons: the new place, or the early hour (capacity carriers may be off at night).
+
+**Cross-check without MATLAB:** the NumPy raster search (`capture/cell_scan.py`) on the 23 Nov survey bursts at LO 2655–2685 MHz also finds PCI 317 at GSCN 6669: 5 of 5 MIBs, CFO −8.11 kHz (MATLAB −8.109 kHz), SSB index 3. Its MIB: k_SSB 6, pdcch-ConfigSIB1 16, not barred.
 
 ## The board's crystal
 
@@ -82,7 +86,7 @@ The crystal itself:
 - **First day, evening:** +2.9 ppm, after two spontaneous resets.
 - **Second day:** −3.1 ppm right after plugging in, −6.5 ppm after 8 minutes of capturing.
 
-Large and sudden, so the CFO must be found again at every start.
+Large and sudden, so the CFO must be found again at every start. Firmware version 3 answers `BOOT?` with the reset reason, which will show whether the resets are brownouts.
 
 ## Simulation (not measured)
 
