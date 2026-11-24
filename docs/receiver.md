@@ -11,7 +11,7 @@ The firmware does the first steps on the chip: the PSS (all versions) and the SS
 1. **Mix and search.**
    - Shift the candidate SSB centre (SS_REF, subcarrier 120 of the SSB) to 0 Hz.
    - Correlate with the three PSS over a grid of CFO hypotheses, after a ±1.1 MHz low-pass.
-   - The statistic is normalised to a unit-mean exponential under white noise for one trial. The thresholds are 18 for a burst search and 14 on the chip (10.5 in its ±40 µs tracking window).
+   - The statistic is normalised to a unit-mean exponential under white noise for one trial. The thresholds are 18 for a burst search and 14 on the chip (10.5 in its ±12 µs tracking window).
 2. **CFO inside the PSS symbol:** the phase between the correlations of its two halves.
 3. **Fine timing:**
    - MATLAB: the correlation peak at 7.68 MS/s.
@@ -93,7 +93,9 @@ The C5's crystal moves by several ppm (warm-up, resets; [hardware.md](hardware.m
 
 ### Timing floor
 
-The firmware's `t0_us` has 1 µs resolution. Uniform rounding alone gives 1/√12 = 0.29 µs RMS, and that is what the SFN-anchored timing reaches (0.29–0.30 µs RMS over 30–78 s). A phase-slope timing estimate across subcarriers was noisier (0.51 µs) and was replaced by the interpolated correlation peak. Firmware version 3 stamps in 62.5 ns steps; how far that lowers the floor on the chip is not yet measured.
+The firmware's `t0_us` has 1 µs resolution. Uniform rounding alone gives 1/√12 = 0.29 µs RMS, and that is what the SFN-anchored timing reaches (0.29–0.30 µs RMS over 30–78 s). A phase-slope timing estimate across subcarriers was noisier (0.51 µs) and was replaced by the interpolated correlation peak. **Firmware version 3** stamps in 62.5 ns steps, read with interrupts off. With it the SFN-anchored timing is 51–118 ns RMS (24 Nov, 46–120 s runs, quadratic clock fit).
+
+A few SSBs fall 0.2–0.5 µs early. The cause is open: multipath, or the interpolated peak at low SNR.
 
 ## Validation
 

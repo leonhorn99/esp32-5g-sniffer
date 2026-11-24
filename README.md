@@ -4,7 +4,7 @@
 
 - the cell identity (PCI), the SSB index (beam), the frame number (SFN) and the full MIB;
 - the frequency offset, with the board's crystal error as a by-product;
-- frame timing to 0.3 µs on the chip's clock;
+- frame timing to about 0.1 µs on the chip's clock;
 - a channel estimate for every SSB.
 
 It is receive-only, and it decodes only the broadcast signals every phone reads before it connects.
@@ -21,8 +21,8 @@ It is receive-only, and it decodes only the broadcast signals every phone reads 
 
 - **On-chip SSB detection** (firmware command `SSBDET`, our fork of [ESPsoup](https://github.com/pit711/espsoup-firmware)):
   - the ESP32-C5 finds the SSBs of a cell and tracks them on the 20 ms grid;
-  - it sends only the I/Q around each SSB, about 25 SSBs per second over USB full speed, where a continuous stream would need 8 times the bandwidth.
-  - version 3 (tested on the PC with the identical DSP code, not yet on the chip) also searches for the cell itself (all N_ID2, ±30 kHz), puts the PCI from the SSS in every frame, sends 5 MS/s cuts and stamps them in 62.5 ns steps.
+  - it sends only the I/Q around each SSB, 25 SSBs per second (every second SSB of a 20 ms cell) over USB full speed, where a continuous stream would need 8 times the bandwidth.
+  - version 3 also searches for the cell itself (all N_ID2, ±30 kHz), puts the PCI from the SSS in every frame, sends 5 MS/s cuts and stamps them in 62.5 ns steps.
 - **A complete NR SSB receiver in NumPy** (`capture/nr_ssb.py`):
   - the chain: PSS → SSS → PBCH DM-RS → channel estimate → PBCH → CRC-aided polar list decoding → BCH → MIB;
   - 15 and 30 kHz SSBs, L_max 4 and 8, a fast search over the whole GSCN raster, RSRP (uncalibrated);
@@ -48,9 +48,10 @@ It is receive-only, and it decodes only the broadcast signals every phone reads 
 | NR cells found | band **n1** (2.1 GHz): PCI 165, 166 (two sectors of one site), 20 (another site); band **n7** (2.6 GHz): PCI 317 |
 | MIB decoding | every SSB caught in first light: 18/18 (20 MS/s), 13/13 (40 MS/s); live: 1780 of 1781 SSBs of PCI 165 in 78 s |
 | SNR | MIBs decode down to about −6 dB per resource element; the board antenna gave −5 to +11 dB |
-| Frame timing | 0.30 µs RMS against the cell's SFN grid, which is the firmware's 1 µs timestamp rounding |
+| Frame timing | 51–118 ns RMS against the cell's SFN grid with firmware version 3 (version 2: 0.30 µs, its 1 µs timestamp rounding) |
 | Frequency offset | equals the board's crystal error measured from the timing, to 30–130 Hz |
-| Throughput | 24.5 SSB cuts per second over USB full speed, no frame lost |
+| Throughput | 25 SSB cuts per second (every second SSB) over USB full speed, no frame lost; 2 tracking misses in 3000 |
+| On-chip PCI | equal to the host's decoding in 2930 of 2930 SSBs |
 
 Details, figures and what went wrong on the way: [docs/results.md](docs/results.md).
 

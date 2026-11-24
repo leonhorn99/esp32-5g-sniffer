@@ -42,6 +42,36 @@ The setup for everything on this page:
 - **PCI 20** (N_ID2 2, another site with its own SFN numbering) decoded 3 times in a first run.
 - **The firmware DSP on a PC:** found 18/18 and 8/8 of the reference detector's SSBs within 0.17 µs, with no false detection.
 
+## Firmware version 3 on the board (24 Nov 2026)
+
+**Setup:** PCI 165 at 2125.45 MHz (LO 2131 MHz, gain 76), board at another place than on 23 Nov. Every cut decoded on the PC.
+
+| | Version 3.1 | Version 2 (23 Nov) |
+|---|---|---|
+| SSBs, 120 s, 5 MS/s cuts | 2999 (25 per second), 2 tracking misses in 3000 | 737 in 30 s, 7 misses in 743 |
+| MIBs decoded | 3357 (PCI 165 and 166) | 724 |
+| PCI from the chip's SSS | 2930 equal to the PC's, 0 different, 51 below its threshold | – |
+| frame timing (SFN-anchored, quadratic clock fit) | 51–118 ns RMS | 0.30 µs RMS |
+| cell search on the chip, from 0 kHz, ±30 kHz, all N_ID2 | first SSB after 4, 4, 8, 26 s | – (host scan) |
+
+**Found and fixed during the test:**
+- **The first cell search was too slow on the chip:** 4.9 s per burst, no SSB in 35 s. A frequency-domain search (version 3.1) needs 0.78 s per burst.
+- **0.4 % of the captures were 4.7 µs late** behind their timestamps: an interrupt between the timer read and the capture start. Since interrupts are off there, there were none in 3357 MIBs.
+
+**Still open:**
+- Only every second SSB is captured: the cycle per SSB is just over 20 ms.
+- The tracking misses rise at weaker signal: in one run, 31 misses in 315 tracking captures with a median statistic of 28. It is not clear why the same statistic gave 2 misses in another run.
+
+**The live view and the headless monitor** ran on the board with version 3:
+- the live view with `--ssb auto` decoded 1403 MIBs from 1405 SSBs, at 0.07 µs RMS;
+- the monitor, with raw cuts, decoded 1142 MIBs with no false alert.
+
+**The cell scanner** (NumPy, live), at LO 2131 and 2670 MHz with 100 bursts each:
+- PCI 165 and 166 in n1;
+- PCI 317 in n7.
+
+Every SSB it found decoded its MIB. Both cells give the board's crystal as −5.2 ppm.
+
 ## Live view (23 Nov 2026, 78 s)
 
 - **Cuts:** 1916 (25 per second, no CRC error, none skipped).
@@ -73,7 +103,11 @@ With on-chip detection, PCI 317 gave 306 SSBs in 15 s.
 
 **A repeat on 24 Nov at 05:40**, with the board at another place:
 - **Same result:** PCI 317 in n7 (3 MIBs, +4.3 dB, 6 dB weaker), nothing at 30 kHz, nothing at 4.8–6 GHz.
-- **The band 7 carriers were not visible in the spectrum.** Possible reasons: the new place, or the early hour (capacity carriers may be off at night).
+- **The band 7 carriers were not visible in the spectrum**, at 05:40 or at 07:05: about 0 dB above the floor, against 14–24 dB on 23 Nov.
+  - Their coming back for the day would have shown at 07:05, so a night switch-off is less likely.
+  - PCI 317 still decodes at the new place, at +4.5 dB. Carriers from the same site would show about 17 dB above the floor.
+  - So they most likely come from another site, shadowed at the new place (*estimate*). A capture at the old place would tell.
+- **The n1 band's top edge** (2160–2170 MHz) was about 25 dB weaker.
 
 **Cross-check without MATLAB:** the NumPy raster search (`capture/cell_scan.py`) on the 23 Nov survey bursts at LO 2655–2685 MHz also finds PCI 317 at GSCN 6669: 5 of 5 MIBs, CFO −8.11 kHz (MATLAB −8.109 kHz), SSB index 3. Its MIB: k_SSB 6, pdcch-ConfigSIB1 16, not barred.
 

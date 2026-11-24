@@ -11,6 +11,7 @@ Skipped when the captures or a C compiler are missing.
 """
 import csv
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -55,9 +56,10 @@ def write_input(tmp: Path, folder: Path):
     return recs, inp
 
 
-def harness(exe: Path, inp: Path, fs: float, *args):
+def harness(exe: Path, inp: Path, fs: float, *args, exact: bool = False):
+    env = dict(os.environ, SSB_SEARCH="exact" if exact else "fft")
     out = subprocess.run([str(exe), str(inp), str(int(fs))] + [str(a) for a in args], check=True,
-                         capture_output=True, text=True).stdout
+                         capture_output=True, text=True, env=env).stdout
     # idx n_out lag stat cfo raw_idx ddc_ms corr_ms nid2 cfo_off pci sss_stat sss_ratio sss_ms
     return [line.split() for line in out.splitlines()]
 
@@ -132,7 +134,8 @@ class TestOnChipDetector(unittest.TestCase):
         return recs, inp, exp
 
     def test_cell_search(self):
-        """SSBDET with N_ID2 3 and a CFO span: from 0 kHz, all N_ID2, -15..+15 kHz in 5 kHz steps."""
+        """SSBDET with N_ID2 3 and a CFO span: from 0 kHz, all N_ID2, -15..+15 kHz (FFT search, 3.9 kHz
+        bins), against the time-domain search over 5 kHz steps."""
         recs, inp, exp = self._sample20()
         rows = [p for p in harness(self.exe, inp, 20e6, int(2125.45e6 - 2131e6), 3, 15000) if float(p[3]) >= THRESHOLD]
         found = {recs[int(p[0])]["idx"]: p for p in rows}
@@ -144,6 +147,11 @@ class TestOnChipDetector(unittest.TestCase):
             self.assertLess(abs(int(p[9]) + float(p[4]) - 10840), 3000, "CFO of the cell search")
         cfos = [int(p[9]) + float(p[4]) for p in found.values()]
         self.assertLess(abs(np.median(cfos) - 10840), 800, "median CFO of the cell search")
+        ref = {recs[int(p[0])]["idx"]: p for p in harness(self.exe, inp, 20e6, int(2125.45e6 - 2131e6), 3, 15000, exact=True)
+               if float(p[3]) >= THRESHOLD}
+        self.assertEqual(set(ref), set(found), "FFT and time-domain search find different SSBs")
+        for b in found:
+            self.assertLessEqual(abs(int(found[b][2]) - int(ref[b][2])), 1, f"burst {b}: lag of the FFT search")
         print(f"\ncell search: {len(found)}/{len(exp)} SSBs, N_ID2 0, PCI 165, "
               f"CFO {np.median([int(p[9]) + float(p[4]) for p in found.values()]):+.0f} Hz")
 

@@ -3,12 +3,13 @@
 Roughly ordered by value for effort within each group. *(estimate)* marks our guesses.
 
 **Status 24 Nov 2026:**
-- **Done** (firmware version 3, PC-tested; host tools tested on recorded data):
+- **Done** (firmware version 3, tested on the board on 24 Nov 2026; host tools tested on recorded data and live):
   - firmware 1 (sub-µs timestamps), 2 (cell search), 3 (SSS/PCI), 7 (decimated cuts) and part of 9 (reset reason);
   - host 1 (cell scanner, as a CLI and `--ssb auto` in the live view, not yet a GUI tab), 3 (30 kHz and L_max 8), 6 (headless monitor with alerts) and 7 (SigMF, a JSON/UDP feed);
   - RSRP in dBFS (the calibration part of host 5).
 - **Dropped:** `FREQK` from firmware 8. It is only approximate (about ±30 kHz), which would corrupt CFO and crystal measurements; `TUNEM` already picks the good path above 3 GHz.
 - **Open:** everything else below.
+- **New (from the board test):** every SSB instead of every second one. The cycle per SSB is just over 20 ms; decoding the raw samples once for both decimators should bring it below (*estimate*).
 
 ## Firmware (branch `ssb-sniffer`)
 

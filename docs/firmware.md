@@ -7,11 +7,11 @@
 
 What our branch adds to ESPsoup 0.7.1 is one command, `SSBDET`: on-chip detection of the SSBs of one NR cell. The board sends only the I/Q around each SSB, with its timestamp.
 
-**Version 3** (`FWOPT 0.7.1-dev+ssb3`, CAPS `SSBDET3 BOOT`) adds:
-- a **cell search on the chip**: all N_ID2 (`nid2` 3) and CFO hypotheses (`cfo_span`). The host no longer needs to know the cell or the crystal error.
+**Version 3** (`FWOPT 0.7.1-dev+ssb3.1`, CAPS `SSBDET3 BOOT`; tested on the board on 24 Nov 2026) adds:
+- a **cell search on the chip**: all N_ID2 (`nid2` 3) and CFO hypotheses (`cfo_span`), in the frequency domain (one FFT per block of the burst). The host no longer needs to know the cell or the crystal error.
 - the **PCI from the on-chip SSS** in every frame;
 - **decimated cuts** at 5 MS/s that keep the whole SSB, about 4× less data than raw cuts;
-- **sub-µs timestamps** from the 16 MHz systimer (62.5 ns steps; the 1 µs steps of version 2 were the 0.29 µs RMS timing floor);
+- **sub-µs timestamps** from the 16 MHz systimer (62.5 ns steps), read with interrupts off: the frame timing went from 0.30 µs RMS (version 2) to 51–118 ns;
 - **`BOOT?`**, the chip's reset reason.
 
 The host tools use all of it automatically when the board reports `SSBDET3`.
@@ -27,7 +27,7 @@ Command line (stores the cuts as a session in `data/`):
     --freq 2131 --ssb 2125.45 --nid2 auto --cfo 0 --cfo-span 30000 --dec --duration 30    # version 3
 ```
 
-Live view (decodes and shows every SSB; `--record` stores them):
+Live view (decodes and shows every SSB it receives; `--record` stores them):
 
 ```bash
 .venv_local/bin/python -m capture.ssb_live --port /dev/ttyACM0 --freq 2131 --ssb 2125.45 [--nid2 0 --cfo 12000]
@@ -56,16 +56,17 @@ for kind, item in ssb_stream(sdr, rate_code=2, offset_hz=-5_550_000, nid2=0, cfo
 
 | | |
 |---|---|
-| SSB cuts per second (20 MS/s, 8 bit, 20 ms cell) | about 25, i.e. every SSB; limited by USB full speed |
+| SSB cuts per second (20 MS/s, 20 ms cell) | about 25, i.e. every second SSB. Raw cuts are limited by USB full speed (18 ms per cut); 5 MS/s cuts by the processing (just over 20 ms per cycle) |
 | cut length | 0.33 ms: the SSB plus 20 µs on either side, 13 KB at 8 bit |
 | tracking misses | 7 in 743 over 30 s |
 | on-chip time per SSB | decimation about 5 ms, PSS search 1–2 ms (tracking), send about 18 ms |
-| timestamp | version 2: 1 µs resolution (`esp_timer`), the 0.3 µs RMS timing floor; version 3: 62.5 ns steps |
+| timestamp | version 2: 1 µs resolution (`esp_timer`), the 0.3 µs RMS timing floor; version 3: 62.5 ns steps, 51–118 ns RMS measured |
+| cell search (version 3, ±30 kHz, all N_ID2) | 0.78 s per acquisition burst; first SSB after 4–26 s (4 trials) |
 
 **Limits:**
 - One cell per run, 15 kHz SSB spacing only.
 - Version 2 needs the cell's N_ID2 and a rough CFO (the host scans for them); version 3 searches itself.
-- Version 3 was checked on the PC with the identical DSP code, not yet on the chip.
+- **Every second SSB only.** Catching every SSB needs a tracking cycle below 20 ms. Decoding the raw samples once for both decimators should get there (*estimate*).
 
 Ideas for the firmware are in [roadmap.md](roadmap.md).
 
@@ -75,7 +76,9 @@ Ideas for the firmware are in [roadmap.md](roadmap.md).
 - 18/18 SSBs found;
 - positions within 0.17 µs;
 - no false detection;
-- version 3: PCI 165 from the on-chip SSS in 18/18; the cell search from 0 kHz finds all 18 (CFO +10.75 kHz, true about +10.8 kHz); the 5 MS/s cuts decode 18/18 MIBs in the NumPy receiver.
+- version 3: PCI 165 from the on-chip SSS in 18/18; the cell search from 0 kHz finds all 18 (CFO +10.9 kHz, true about +10.8 kHz), at the same lags as the slower time-domain search; the 5 MS/s cuts decode 18/18 MIBs in the NumPy receiver.
+
+**The PC test cannot show the time per burst on the chip.** Version 3's first cell search passed it but took 4.9 s per burst on the chip (39 time-domain correlations without an FPU). Check the speed with `END SSBDET` (its `corr_us`) after flashing.
 
 Run it after every change to `ssb_dsp.h` and before flashing:
 
