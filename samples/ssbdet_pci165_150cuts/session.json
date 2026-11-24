@@ -1,0 +1,290 @@
+{
+  "format": 1,
+  "created_unix": 1795438936.1754837,
+  "created": "2026-11-23T14:02:16+0100",
+  "host": "anonymised",
+  "device": {
+    "info": "C5SDR 6 burst 16380",
+    "caps": [
+      "ALPF",
+      "BIGCAP",
+      "CAPT",
+      "CGRID",
+      "CONT",
+      "CPKT",
+      "CSPEC",
+      "DCCAL",
+      "DCT",
+      "DDC",
+      "DEMODFM",
+      "DUALSERIAL",
+      "FREQK",
+      "FWOPT",
+      "GAIN",
+      "GFSKPKT",
+      "HWAGC",
+      "IQ8",
+      "LPF",
+      "LPF12",
+      "PARLIO",
+      "RXLIMITS",
+      "SERIALLEASE",
+      "SPEC",
+      "SPECCAPS",
+      "SPECDB",
+      "SPECN",
+      "SPECSTAT",
+      "SSBDET",
+      "STREAM",
+      "SWEEP",
+      "TEMP",
+      "TUNEEXT",
+      "TUNEM",
+      "UARTBAUD",
+      "VFMCOLOR"
+    ],
+    "limits": {
+      "gain": [
+        0,
+        82,
+        1
+      ],
+      "bandwidth": [
+        11,
+        48,
+        1,
+        0
+      ],
+      "rates": [
+        80000000,
+        40000000,
+        20000000,
+        10000000,
+        8000000,
+        4000000
+      ],
+      "bits": [
+        8,
+        10
+      ],
+      "maxSamples": 32704,
+      "stream": {
+        "hw": [
+          8000000,
+          10000000,
+          20000000,
+          4000000
+        ],
+        "maxRate": 500000,
+        "bits": [
+          8,
+          16
+        ],
+        "block": 8192,
+        "gapped": true,
+        "cont": true
+      },
+      "cspec": {
+        "nfft": [
+          16,
+          256
+        ],
+        "modes": [
+          "mean",
+          "max",
+          "both"
+        ]
+      },
+      "ddc": {
+        "src": [
+          80000000,
+          40000000,
+          20000000
+        ],
+        "bits": [
+          8,
+          16
+        ]
+      },
+      "spec": {
+        "nfft": [
+          64,
+          1024
+        ]
+      },
+      "freqStepHz": 1000,
+      "lockMHz": [
+        [
+          2130,
+          2730
+        ],
+        [
+          4790,
+          5990
+        ]
+      ]
+    },
+    "version": null,
+    "fwopt": "FWOPT 0.7.1-dev+ssb2 espsoup rx-only C5",
+    "transport": "TRANSPORT USB 0",
+    "range": "RANGE 100 6000 1"
+  },
+  "settings": {
+    "mode": "ssbdet",
+    "freq_mhz": [
+      2131
+    ],
+    "ssb_mhz": 2125.45,
+    "offset_hz": -5550000,
+    "nid2": 0,
+    "cfo_hz": 15000,
+    "rate_msps": 20.0,
+    "rate_code": 2,
+    "bits": 8,
+    "gain": 76,
+    "bandwidth_mhz": null,
+    "thr": 14.0,
+    "pre_us": 20,
+    "post_us": 20,
+    "period_ms": 20.0,
+    "every": 1,
+    "track": true,
+    "count": 0,
+    "duration_s": 30.0,
+    "label": "ssbdet_v2",
+    "note": "SSBDET v2: tracking threshold -3.5, host reader fix",
+    "gain_scan": [
+      {
+        "gain": 0,
+        "rms": 3.22291898727417,
+        "peak": 7.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 4,
+        "rms": 2.6178054809570312,
+        "peak": 5.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 8,
+        "rms": 2.8778433799743652,
+        "peak": 6.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 12,
+        "rms": 2.7811403274536133,
+        "peak": 6.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 16,
+        "rms": 5.714949131011963,
+        "peak": 9.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 20,
+        "rms": 5.960870742797852,
+        "peak": 10.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 24,
+        "rms": 8.548724174499512,
+        "peak": 12.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 28,
+        "rms": 8.390829086303711,
+        "peak": 12.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 32,
+        "rms": 9.38653564453125,
+        "peak": 13.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 36,
+        "rms": 8.660697937011719,
+        "peak": 15.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 40,
+        "rms": 12.078933715820312,
+        "peak": 17.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 44,
+        "rms": 16.231773376464844,
+        "peak": 18.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 48,
+        "rms": 10.495052337646484,
+        "peak": 20.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 52,
+        "rms": 16.20376968383789,
+        "peak": 24.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 56,
+        "rms": 13.868936538696289,
+        "peak": 35.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 60,
+        "rms": 13.752791404724121,
+        "peak": 45.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 64,
+        "rms": 16.44245719909668,
+        "peak": 56.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 68,
+        "rms": 30.718862533569336,
+        "peak": 95.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 72,
+        "rms": 40.62919235229492,
+        "peak": 149.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 76,
+        "rms": 78.2616958618164,
+        "peak": 242.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 80,
+        "rms": 100.43521881103516,
+        "peak": 352.0,
+        "clip_frac": 0.0
+      }
+    ]
+  },
+  "sample": {
+    "source_session": "20261123_140216_ssbdet_v2",
+    "bursts": 150,
+    "description": "First 150 SSB cuts of an SSBDET run (on-chip detection, 20 MS/s, 8 bit) on the NR cell PCI 165, band n1, SSB at 2125.45 MHz, LO 2131 MHz, indoors with the board antenna, 23 Nov 2026."
+  }
+}

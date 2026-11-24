@@ -1,0 +1,21 @@
+{
+    // Open this file (File > Open Workspace from File...) to work on the firmware with the
+    // ESP-IDF extension. The extension treats a workspace folder as the ESP-IDF project, and
+    // the project is firmware/espsoup-firmware, not the repo root: pick that folder in the
+    // ESP-IDF status bar ("ESP-IDF: Pick a Workspace Folder") before Set Target / Build / Flash.
+    // Its settings (pinned ESP-IDF, build dir outside the source tree) are in
+    // firmware/espsoup-firmware/.vscode/settings.json.
+    "folders": [
+        { "name": "ESP32_5G_Sniffer", "path": "." },
+        { "name": "firmware (ESPsoup C5)", "path": "firmware/espsoup-firmware" }
+    ],
+    "settings": {
+        // read by the extension at workspace level only (not per folder)
+        "idf.sdkconfigDefaults": ["sdkconfig.defaults.esp32c5"],
+        "clangd.arguments": [
+            "--background-index",
+            "--query-driver=**",
+            "--compile-commands-dir=${userHome}/build/esp32_5g_sniffer/build-esp32c5"
+        ]
+    }
+}

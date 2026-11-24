@@ -1,0 +1,38 @@
+{
+    "version": "2.0.0",
+    "inputs": [
+        {
+            "id": "port",
+            "type": "promptString",
+            "description": "Serial port of the ESP32-C5",
+            "default": "/dev/ttyACM0"
+        }
+    ],
+    "tasks": [
+        {
+            "label": "firmware: build",
+            "type": "shell",
+            "command": "${workspaceFolder}/firmware/fw.sh build",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "firmware: flash",
+            "type": "shell",
+            "command": "${workspaceFolder}/firmware/fw.sh flash ${input:port}",
+            "problemMatcher": []
+        },
+        {
+            "label": "firmware: flash prebuilt 0.7.1",
+            "type": "shell",
+            "command": "${workspaceFolder}/firmware/fw.sh flash-prebuilt ${input:port}",
+            "problemMatcher": []
+        },
+        {
+            "label": "firmware: info",
+            "type": "shell",
+            "command": "${workspaceFolder}/firmware/fw.sh info ${input:port}",
+            "problemMatcher": []
+        }
+    ]
+}

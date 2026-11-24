@@ -1,0 +1,6 @@
+# Host tools of esp32-5g-sniffer (Python 3.10+). Tested with numpy 2.5, matplotlib 3.11, pyserial 3.5.
+numpy>=1.24
+matplotlib>=3.7
+pyserial>=3.5
+# optional: window grab for `ssb_live --snapshot`
+pillow>=10

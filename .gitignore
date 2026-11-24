@@ -1,0 +1,29 @@
+# Python
+.venv_local/
+__pycache__/
+*.pyc
+
+# private research material (not published)
+RESEARCH_LOG.md
+CLAUDE.md
+.claude/
+docs/first_light_2026-11-23/
+docs/publication_ideas_*.md
+
+# captures and derived results: large and personal; samples/ holds the published excerpts
+data/
+results/
+logs/
+waveforms/
+firmware/backups/
+firmware/prebuilt/
+
+# editor settings with local paths
+.vscode/settings.json
+
+# firmware builds (they go to ~/build/esp32_5g_sniffer anyway)
+firmware/espsoup-firmware/build*/
+firmware/espsoup-firmware/managed_components/
+
+# MATLAB autosave
+*.asv

@@ -1,0 +1,282 @@
+{
+  "format": 1,
+  "created_unix": 1795429209.722679,
+  "created": "2026-11-23T11:20:09+0100",
+  "host": "anonymised",
+  "device": {
+    "info": "C5SDR 6 burst 16380",
+    "caps": [
+      "ALPF",
+      "BIGCAP",
+      "CAPT",
+      "CGRID",
+      "CONT",
+      "CPKT",
+      "CSPEC",
+      "DCCAL",
+      "DCT",
+      "DDC",
+      "DEMODFM",
+      "DUALSERIAL",
+      "FREQK",
+      "FWOPT",
+      "GAIN",
+      "GFSKPKT",
+      "HWAGC",
+      "IQ8",
+      "LPF",
+      "LPF12",
+      "PARLIO",
+      "RXLIMITS",
+      "SERIALLEASE",
+      "SPEC",
+      "SPECCAPS",
+      "SPECDB",
+      "SPECN",
+      "SPECSTAT",
+      "STREAM",
+      "SWEEP",
+      "TEMP",
+      "TUNEEXT",
+      "TUNEM",
+      "UARTBAUD",
+      "VFMCOLOR"
+    ],
+    "limits": {
+      "gain": [
+        0,
+        83,
+        1
+      ],
+      "bandwidth": [
+        11,
+        48,
+        1,
+        0
+      ],
+      "rates": [
+        80000000,
+        40000000,
+        20000000,
+        10000000,
+        8000000,
+        4000000
+      ],
+      "bits": [
+        8,
+        10
+      ],
+      "maxSamples": 32704,
+      "stream": {
+        "hw": [
+          8000000,
+          10000000,
+          20000000,
+          4000000
+        ],
+        "maxRate": 500000,
+        "bits": [
+          8,
+          16
+        ],
+        "block": 8192,
+        "gapped": true,
+        "cont": true
+      },
+      "cspec": {
+        "nfft": [
+          16,
+          256
+        ],
+        "modes": [
+          "mean",
+          "max",
+          "both"
+        ]
+      },
+      "ddc": {
+        "src": [
+          80000000,
+          40000000,
+          20000000
+        ],
+        "bits": [
+          8,
+          16
+        ]
+      },
+      "spec": {
+        "nfft": [
+          64,
+          1024
+        ]
+      },
+      "freqStepHz": 1000,
+      "lockMHz": [
+        [
+          2130,
+          2730
+        ],
+        [
+          4790,
+          5990
+        ]
+      ]
+    },
+    "version": null,
+    "fwopt": "FWOPT 0.7.1-dev espsoup rx-only C5",
+    "transport": "TRANSPORT USB 0",
+    "range": "RANGE 100 6000 1"
+  },
+  "settings": {
+    "freq_mhz": [
+      2131
+    ],
+    "per_freq": 10,
+    "rate_msps": 20.0,
+    "rate_code": 2,
+    "bits": 10,
+    "n": 32704,
+    "gain": 76,
+    "bandwidth_mhz": null,
+    "dccal": false,
+    "count": 300,
+    "duration_s": null,
+    "label": "n1_2131",
+    "note": "first light 20261123_112005, board antenna, indoors",
+    "timed": true,
+    "gain_scan": [
+      {
+        "gain": 0,
+        "rms": 2.6506145000457764,
+        "peak": 6.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 4,
+        "rms": 1.9607352018356323,
+        "peak": 4.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 8,
+        "rms": 2.05731463432312,
+        "peak": 5.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 12,
+        "rms": 2.2146472930908203,
+        "peak": 5.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 16,
+        "rms": 3.119800329208374,
+        "peak": 6.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 20,
+        "rms": 3.1635899543762207,
+        "peak": 7.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 24,
+        "rms": 4.393362522125244,
+        "peak": 9.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 28,
+        "rms": 28.42739486694336,
+        "peak": 32.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 32,
+        "rms": 42.142906188964844,
+        "peak": 47.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 36,
+        "rms": 5.38960599899292,
+        "peak": 9.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 40,
+        "rms": 7.928983211517334,
+        "peak": 16.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 44,
+        "rms": 15.422646522521973,
+        "peak": 24.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 48,
+        "rms": 10.446910858154297,
+        "peak": 17.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 52,
+        "rms": 16.848297119140625,
+        "peak": 30.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 56,
+        "rms": 15.061734199523926,
+        "peak": 47.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 60,
+        "rms": 12.025805473327637,
+        "peak": 41.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 64,
+        "rms": 16.444746017456055,
+        "peak": 68.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 68,
+        "rms": 49.34638595581055,
+        "peak": 143.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 72,
+        "rms": 73.52054595947266,
+        "peak": 244.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 76,
+        "rms": 53.125770568847656,
+        "peak": 205.0,
+        "clip_frac": 0.0
+      },
+      {
+        "gain": 80,
+        "rms": 85.31983947753906,
+        "peak": 324.0,
+        "clip_frac": 0.0
+      }
+    ]
+  },
+  "sample": {
+    "source_session": "20261123_112009_n1_2131",
+    "bursts": 30,
+    "description": "30 full bursts (32,704 samples, 20 MS/s, 10 bit) at LO 2131 MHz: the 18 that hold an SSB of PCI 165 (SSB at 2125.45 MHz) and the first 12 without one, 23 Nov 2026 (first light)."
+  }
+}

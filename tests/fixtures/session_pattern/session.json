@@ -1,0 +1,55 @@
+{
+  "format": 1,
+  "created_unix": 1795093807.6864154,
+  "created": "2026-11-19T14:10:07+0100",
+  "host": "fixture",
+  "device": {
+    "info": "C5SDR 6 burst 16380",
+    "caps": [
+      "BIGCAP",
+      "CAPT",
+      "DCCAL",
+      "FWOPT",
+      "GPIO",
+      "RXLIMITS",
+      "TEMP",
+      "TUNEEXT"
+    ],
+    "limits": {
+      "gain": [
+        0,
+        80,
+        1
+      ],
+      "bandwidth": [
+        11,
+        48,
+        1,
+        48
+      ],
+      "rates": [
+        80000000,
+        40000000,
+        20000000,
+        10000000,
+        8000000,
+        4000000
+      ],
+      "bits": [
+        8,
+        10
+      ],
+      "maxSamples": 32704
+    },
+    "version": {
+      "git": "fake",
+      "built": "2026-11-19"
+    },
+    "fwopt": "FWOPT 0.7.1-dev espsoup rx-only C5 (fake)",
+    "transport": "TRANSPORT USB 0",
+    "range": "RANGE 100 6000 1"
+  },
+  "settings": {
+    "note": "fixture from tests/fake_device.py, pattern() values"
+  }
+}

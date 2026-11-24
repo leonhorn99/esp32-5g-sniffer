@@ -1,0 +1,4 @@
+[submodule "firmware/espsoup-firmware"]
+	path = firmware/espsoup-firmware
+	url = ../espsoup-firmware.git
+	branch = ssb-sniffer
