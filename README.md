@@ -104,6 +104,7 @@ firmware/fw.sh build && firmware/fw.sh flash /dev/ttyACM0       # needs the pinn
 
 ## Credits and licence
 
+- Author: Leon Horn, 2026. The firmware with SSBDET is the submodule `firmware/espsoup-firmware`, branch `ssb-sniffer` of [leonhorn99/espsoup-firmware](https://github.com/leonhorn99/espsoup-firmware).
 - Built on [ESP-SDR](https://github.com/ESPARGOS/esp-sdr) by the ESPARGOS team (University of Stuttgart) and its ESP32-C5 fork [ESPsoup](https://github.com/pit711/espsoup-firmware) by pit711.
 - The NR procedures follow 3GPP TS 38.211, 38.212 and 38.213. MATLAB's 5G Toolbox served as the reference implementation for the tests.
 - Licence: **GPL-3.0-or-later** for everything in this repository (see `LICENSE`), like ESP-SDR and ESPsoup. ESP32 is a trademark of Espressif Systems; this project is not affiliated with Espressif or ESPARGOS.
