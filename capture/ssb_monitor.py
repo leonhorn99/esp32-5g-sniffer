@@ -5,7 +5,7 @@
   .venv_local/bin/python -m capture.ssb_monitor --replay samples/ssbdet_pci165_150cuts --speed 0 --stdout
   .venv_local/bin/python -m capture.ssb_monitor ... --udp 127.0.0.1:5005      # JSON feed for other tools
 
-Same board handling as the live view (capture/ssb_live.py): reconnects after board resets,
+Same board handling as the live view (capture/ssb_sources.py): reconnects after board resets,
 the chip's own cell search (firmware ssb3), decimated cuts, --record. Every decoded SSB becomes
 one JSON object (type "ssb"); alerts and board events are objects of type "alert" / "event"
 and are also printed to stderr:
@@ -38,8 +38,8 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-from .ssb_live import (MAX_BACKLOG, LiveSource, ReplaySource, _worker_init, add_source_args, check_source_args,
-                       decode_job)
+from .ssb_sources import (MAX_BACKLOG, LiveSource, ReplaySource, _worker_init, add_source_args, check_source_args,
+                          decode_job)
 
 MIB_KEYS = ("scs_common_khz", "kssb", "dmrs_typeA_pos", "pdcch_config_sib1", "cell_barred", "intra_freq_reselection")
 CSV_FIELDS = ("host_time", "t_pss_us", "pci", "ok", "sfn", "hrf", "issb", "snr_db", "rsrp_dbfs", "cfo_hz",

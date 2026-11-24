@@ -52,7 +52,7 @@ So the crystal moves by several ppm with temperature, and has jumped across rese
 ## USB (Linux)
 
 - **Device:** native USB-Serial/JTAG, `/dev/ttyACM0`, ID `303a:1001`; also stable under `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<MAC>-if00`.
-- **Plugging in:** the firmware often does not answer until the chip is reset once. `capture/ssb_live.py` does this through RTS (`EspSdr.hard_reset()`, nothing is written).
+- **Plugging in:** the firmware often does not answer until the chip is reset once. The live view and the monitor (`capture/ssb_sources.py`) do this through RTS (`EspSdr.hard_reset()`, nothing is written).
 - **Spontaneous resets:** one board did this on one laptop port and not on another; when the board resets, it re-enumerates on USB. The live view reconnects by itself. Possible causes: power, cable, or ModemManager. Firmware version 3 answers `BOOT?` with the reset reason (e.g. `brownout`), and the live view and monitor log it at every reconnect.
 - **ModemManager:** tell it to ignore Espressif devices (udev rule in [firmware/README.md](../firmware/README.md)).
 

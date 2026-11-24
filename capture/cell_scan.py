@@ -172,7 +172,7 @@ def capture_lo(sdr, f_lo_mhz: int, rate_code: int, n_bursts: int, pool, cfo_cent
     the second is delayed so that it lands on the longest stretch still missing (the spacing of the
     bursts on the board's clock varies by about +-2 ms, so it is measured as it goes).
     Returns (futures, bursts captured)."""
-    from .ssb_live import iq_scale
+    from .ssb_sources import iq_scale
     cov = Coverage() if looks else None
     futs, n, gaps, last, delay, dur = [], 0, [], None, 0.0, None
     for k in range(n_bursts):
@@ -305,7 +305,7 @@ def main(argv=None):
         p.error("give --port and --freq, or --session")
     for var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"
-    from .ssb_live import _worker_init, iq_scale, parse_los
+    from .ssb_sources import _worker_init, iq_scale, parse_los
     forced = None
     if a.scs:
         forced = [(a.scs * 1e3, a.lmax or (4 if a.scs == 15 else 8))]

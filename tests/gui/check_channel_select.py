@@ -7,7 +7,8 @@ import types
 
 import numpy as np
 
-from capture.ssb_live import App, ScanSource, lo_for_ssb, nr_band, parse_los
+from capture.ssb_live import App
+from capture.ssb_sources import ScanSource, lo_for_ssb, nr_band, parse_los
 from tests.fake_device import FakeDevice
 
 

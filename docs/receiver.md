@@ -22,7 +22,7 @@ The firmware does the first steps on the chip: the PSS (all versions) and the SS
 5. **SSS → PCI.**
    - The SSS is correlated against all 336 N_ID1, coherently with the PSS channel (smoothed over 9 subcarriers). The threshold is 13: 336 · e⁻¹³ ≈ 10⁻³ false PCIs per PSS peak.
    - For cells too weak for one burst, `detect_session` sums the 336 statistics of all PSS peaks at one raster position (Gamma(N, 1) under noise).
-6. **CFO refinement from the PSS → SSS phase** (two symbols apart). It is unambiguous only within ±3.5 kHz (period 7.0 kHz). If the MIB fails the CRC, the two candidates one period away are tried, and one is kept only if its MIB passes.
+6. **CFO refinement from the PSS → SSS phase** (two symbols apart). It is unambiguous only within ±3.5 kHz (period 7.0 kHz). If the MIB fails the CRC, the two candidates one period away are tried, and one is kept only if its MIB passes. So far only `matlab/ssb_detect.m` does this; `capture/nr_ssb.py` does not try them yet.
 7. **PBCH DM-RS → SSB index and half frame (L_max 4).**
    - MATLAB: coherent against the PSS/SSS channel.
    - Python: coherent within 12-subcarrier chunks across the three symbols.

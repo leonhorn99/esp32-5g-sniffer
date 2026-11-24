@@ -78,6 +78,14 @@ firmware/fw.sh build && firmware/fw.sh flash /dev/ttyACM0       # needs the pinn
 
 `--freq` is the LO in whole MHz; the C5 tunes 2130–2730 and 4790–5990 MHz. `--ssb` is the SSB centre frequency (SS_REF), from the cell scanner, a phone app that shows the NR-ARFCN of your serving cell, or `--ssb auto`. Without `--nid2`/`--cfo` the live view finds the strongest cell at that frequency first.
 
+## Code status
+
+This is a research prototype, written in a few days. **The code has not been reviewed independently yet: check it before you rely on it.** The tests in `tests/` (fake board, bit-exact checks of the NumPy receiver against the 5G Toolbox, the firmware DSP on recorded captures) are the main safeguard so far. Known open points:
+
+- The NumPy receiver (`capture/nr_ssb.py`) does not yet retry the PSS → SSS CFO refinement one 7 kHz period away when the MIB fails its CRC; the MATLAB reference does ([docs/receiver.md](docs/receiver.md)).
+- `capture/ssb_sources.py` and `capture/cell_scan.py` each have a `scan_burst` for nearly the same job.
+- Some command-line `main()` functions are long, and no linter or type checker is set up.
+
 ## Documentation
 
 | Page | Contents |

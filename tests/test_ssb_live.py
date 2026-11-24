@@ -1,4 +1,4 @@
-"""capture/ssb_live.py: the decoder job, the clock fit, and a replay of the GUI on a virtual display.
+"""capture/ssb_live.py and capture/ssb_sources.py: the decoder job, the clock fit, and a replay of the GUI on a virtual display.
 
 Run from the project root:  .venv_local/bin/python -m unittest tests.test_ssb_live -v
 The replay test needs xvfb-run; the session is data/20261123_140216_ssbdet_v2 or its excerpt in samples/.
@@ -13,7 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
-from capture.ssb_live import App, decode_job
+from capture.ssb_live import App
+from capture.ssb_sources import decode_job
 from tests.data_paths import find_session
 
 ROOT = Path(__file__).resolve().parents[1]

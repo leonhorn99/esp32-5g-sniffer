@@ -145,7 +145,7 @@ class TestSweep(unittest.TestCase):
 
     def test_cases_and_cfo_window(self):
         from capture.cell_scan import cfo_window, ssb_cases
-        from capture.ssb_live import parse_los
+        from capture.ssb_sources import parse_los
         self.assertEqual(ssb_cases(2131), [(15e3, 4)])
         self.assertEqual(ssb_cases(2670), [(15e3, 4), (30e3, 8)])
         self.assertEqual(ssb_cases(5500), [(30e3, 8)])
