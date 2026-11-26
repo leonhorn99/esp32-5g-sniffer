@@ -3,6 +3,7 @@
 **Read 5G NR synchronisation blocks with a €5 Wi-Fi chip.** An ESP32-C5 development board, with its own PCB antenna, receives the SS/PBCH blocks (SSBs) of 5G cells. This project decodes them into:
 
 - the cell identity (PCI), the SSB index (beam), the frame number (SFN) and the full MIB, explained field by field in the live view (where the cell's SIB1 control channel is, which cells are sectors of one site);
+- offline, the cell's SIB1 (network, carrier frequencies and bandwidth, SSB layout), from bursts timed to its slots (`capture/sib1_capture.py`, `matlab/sib1_offline.m`, `capture/nr_sib1.py`);
 - the frequency offset, with the board's crystal error as a by-product;
 - frame timing to about 0.1 µs on the chip's clock;
 - a channel estimate for every SSB.
@@ -33,6 +34,8 @@ It is receive-only, and it decodes only the broadcast signals every phone reads 
   - finds the cell by itself (`--ssb auto`), recovers from board resets, can record;
   - shows several cells at once, each of which can be shown or hidden;
   - selects the channel in the window: scan a list of LOs, double-click a found cell to track it, or switch the chip to another sector of the same site.
+  - decodes a cell's SIB1 and SIB2… from the window (bursts timed to their slots, then MATLAB's 5G Toolbox and pycrate) and shows them in words;
+  - shows the arrival time of the neighbour cells from the cell's SIB3, from the same cuts.
 - **A reference detector in MATLAB** (`matlab/ssb_detect.m`, 5G Toolbox): it searches the whole GSCN raster, both subcarrier spacings (15/30 kHz) and L_max 4/8. It also sums SSS statistics over bursts, to find weak cells.
 - **A cell scanner** (`capture/cell_scan.py`, and in the live view): every NR cell on the raster around one or more LOs, or over the C5's whole 2.13–2.73 and 4.79–5.99 GHz, as a table with PCI, SNR, RSRP, CFO and MIB.
 - **A headless monitor** (`capture/ssb_monitor.py`): every decoded SSB as JSON, CSV or UDP, with alerts for new PCIs, MIB changes, SFN or timing jumps and frequency outliers.

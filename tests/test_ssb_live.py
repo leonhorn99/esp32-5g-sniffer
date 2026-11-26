@@ -88,5 +88,17 @@ class TestChannelSelection(unittest.TestCase):
         self.assertIn("channel selection ok", out.stdout, out.stdout + out.stderr)
 
 
+@unittest.skipUnless(shutil.which("xvfb-run"), "xvfb-run not present")
+class TestInfoTabs(unittest.TestCase):
+    def test_system_info_and_neighbours(self):
+        """System info and Neighbours tabs; with the private recording also a replay of PCI 317's neighbours."""
+        out = subprocess.run(["xvfb-run", "-a", "-s", "-screen 0 1700x1050x24", sys.executable,
+                              str(ROOT / "tests" / "gui" / "check_info_tabs.py")],
+                             cwd=ROOT, capture_output=True, text=True, timeout=900,
+                             env={**os.environ, "PYTHONPATH": str(ROOT)})
+        self.assertIn("tabs with injected data ok", out.stdout, out.stdout + out.stderr)
+        self.assertTrue("replay: PCI 100" in out.stdout or "skipped" in out.stdout, out.stdout + out.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

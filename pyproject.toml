@@ -20,6 +20,7 @@ classifiers = [
 
 [project.optional-dependencies]
 gui = ["pillow>=10"]
+sib1 = ["pycrate>=0.7"]
 
 [project.scripts]
 esp32-capture = "capture.capture_bursts:main"

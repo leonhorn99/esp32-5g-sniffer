@@ -129,13 +129,29 @@ Every cut is decoded in a separate process. It is also tried with the other two 
   - CFO of the decoded SSBs, with the chip's own estimate and the CFO the measured clock rate implies;
   - SFN-anchored frame timing with a quadratic clock fit, plus the clock error now (ppm) and its change per minute;
   - SNR (o MIB decoded, x failed).
-- **Side panel, in four tabs:**
+- **Side panel, in six tabs:**
   - **Cell:** stream counters (including board losses), the latest MIB fields with RSRP (dBFS, not calibrated) and the chip's PCI, the cell table;
   - **MIB:** the MIB of up to three cells side by side, every field in words (`capture/nr_mib.py`):
     - Raw fields: the number of MIBs and whether the content ever changed, SFN, half frame, SSB indices, subcarrier spacing, k_SSB, DM-RS position, cellBarred, intraFreqReselection.
     - Computed from `pdcch-ConfigSIB1` (TS 38.213 V17.14.0, Tables 13-1 and 13-11, 15 kHz): whether SIB1 is announced, the size and frequency band of CORESET#0, and the slots and symbol where the PDCCH for SIB1 is sent.
     - Click a row for what it means.
-    - Below the table: cells with the same SSB frequency and MIB (most likely sectors of one site), and which cells announce SIB1. A change of a cell's MIB is logged.
+    - Below the table: cells with the same SSB frequency and MIB (most likely sectors of one site), and which cells announce SIB1 (or have it decoded). A change of a cell's MIB is logged.
+  - **System info:** SIB1 and SIB2… of the cell with the most MIBs, every field in words (`capture/nr_sib1.py`), as a tree:
+    - who runs the cell, its carriers, SSB power, the SI schedule;
+    - SIB2 reselection, SIB3 neighbour cells, SIB4 other NR carriers, SIB5 LTE carriers.
+    - Click a row for its whole text.
+    - The content comes from every earlier decode of that PCI and SSB frequency in `results/sib1_*.json`, newest first.
+    - **Decode now** (live; or `--sib` at the start) pauses the stream and decodes the cell's system information, 2–5 min (`ssb_sources.SibSource`):
+      1. bursts timed onto the SIB1 slots (`sib1_capture`; LO chosen so that CORESET#0 and the SSB fit, DC outside CORESET#0), recorded in `data/`;
+      2. `matlab/sib1_offline.m` (soft combining on; log in `logs/`), then pycrate;
+      3. the window of the other SI messages from SIB1's schedule (`nr_sib1.si_plan`: period, window, search space), captured and decoded the same way.
+    - The stream then resumes on the same cell. The status line under the buttons shows each step.
+    - Needs MATLAB with the 5G Toolbox and pycrate.
+    - The TAC and cell identity it shows locate the site: keep them out of public files.
+  - **Neighbours:** arrival time of each neighbour PCI relative to the tracked cell, from the same cuts (`capture/tdoa_neighbours.py`, run inside the decoder processes, about 3 ms per cut for 15 PCIs at 5 MS/s).
+    - The PCI list comes from the cell's decoded SIB3, or is typed in (`--neighbours 100 90 69`).
+    - Per PCI: the SSS statistic (from 8 on: detected), Δt and Δ in metres, and the spread over blocks of 250 cuts.
+    - "Reset sums" starts again, e.g. after moving the board.
   - **Channel:** see below;
   - **Log.**
   - A line below the tabs shows the latest message.
@@ -246,6 +262,65 @@ Options:
 - `scale` converts payload units to 10-bit counts for the RSRP.
 
 `nr_ssb.pss_search_raster(x, fs, offsets, cfos, scs=...)` searches many raster positions at once, and `nr_ssb.gscn_raster(fmin, fmax)` lists them.
+
+## System information (SIB1, SIB2…)
+
+```bash
+# 1. capture: SIB1 slots, then the SI window (options from the decoded SIB1)
+.venv_local/bin/python -m capture.sib1_capture --port /dev/ttyACM0 --freq 2670 --ssb 2667.75 --pci 317
+.venv_local/bin/python -m capture.sib1_capture --port /dev/ttyACM0 --freq 2670 --ssb 2667.75 --pci 317 --sfn-mod 64 --sfn-set 0 2 4 6
+.venv_local/bin/python -m capture.sib1_capture --port /dev/ttyACM0 --freq 2130 --ssb 2125.45 --pci 165 --sfn-mod 8 --sfn-set 0 --slots 0 1 2 3 4 5 6 7 8 9
+# 2. decode (MATLAB), 3. read
+matlab -batch "addpath('matlab'); sib1_offline('data/<session>', 'FreqMHz', 2670, 'SSBMHz', 2667.75, 'PCI', 317, 'Combine', true)" > logs/sib1.log 2>&1 < /dev/null
+.venv_local/bin/python -m capture.nr_sib1 results/sib1_<session>_317.json [--asn1] [--matlab]
+```
+
+**1. Capture** (`capture/sib1_capture.py`). SIB1's control channel is 2–5 ms after the SSB, so a 1.64 ms burst never holds both, and untimed bursts hit its slot only by chance (2 of 60 on 23 Nov). The tool:
+1. finds the cell's SSB once, with bursts timed to cover the 20 ms period;
+2. builds a frame clock on the board's clock: the rate from the CFO (the crystal), the offset from the SSB anchors;
+3. takes the target slots: SIB1's Type0-PDCCH slots from the MIB (`capture/nr_mib.py`), or `--slots` of the frames selected by `--sfn-mod` / `--sfn-set` (an SI window);
+4. plans every burst so that a target slot lies whole in it, spreading the hits over the slot classes. Every 8th burst goes back to an SSB to keep the clock fresh.
+5. records everything as a session in `data/`.
+
+**USB timing:** a capture starts on the first 1 ms USB frame after its command. That tick grid drifts against the cell's slots by about 5 µs/s (26 Nov), so for about 40 % of each 3-minute cycle no burst can hold a whole slot. The tool:
+- models the ticks and the host-to-board offset from the recent bursts;
+- aims every command half a tick before the chosen tick;
+- takes SSB anchors while no tick fits.
+
+On the board: 60 SIB1 slots of PCI 165 in 83 bursts (9 s).
+
+**2. Decode** (`matlab/sib1_offline.m`, see MATLAB tools). It writes the transport blocks whose CRC passed as hex, with their SI indicator, to `results/sib1_<session>_<PCI>.json`.
+- **Other SI messages** need two options from the decoded SIB1 (`nr_sib1 --matlab` prints them):
+  - `OffsetToPointA`: their PDSCH DM-RS starts at point A, not at CORESET#0;
+  - `TimeAllocationList`: SIB1's own time allocations replace default table A.
+  - `Slots`, `FrameMod`, `FrameSet` select an SI window's slots.
+- **`'Combine', true`** soft-combines copies whose PDSCH failed alone:
+  - every copy with a decoded DCI is used with its own allocation and RV;
+  - only if all decoded DCIs share one allocation, that allocation is also assumed in slots whose DCI did not decode but whose PDSCH DM-RS is there (RV from the LTE rule, confirmed by the CRC).
+
+**3. Read** (`capture/nr_sib1.py`). It decodes the BCCH-DL-SCH-Message (TS 38.331, with the optional `pycrate`) and prints, in words:
+- **SIB1:**
+  - PLMNs, tracking area and cell identity;
+  - bands, downlink and uplink carriers in MHz;
+  - SSB indices and period, the duplex mode, the other SIBs.
+- **SIB2:** reselection settings and the SSB measurement window.
+- **SIB3:** neighbour PCIs on the same frequency.
+- **SIB4:** other NR carriers in MHz with their cells.
+- **SIB5:** LTE carriers (EARFCN in MHz for the European bands).
+
+`--asn1` prints the whole message.
+
+## Neighbour cells from the same cuts
+
+```bash
+.venv_local/bin/python -m capture.capture_bursts ssb-stream --port /dev/ttyACM0 --freq 2670 --ssb 2667.75 --nid2 2 --cfo 14500 --duration 120
+.venv_local/bin/python -m capture.tdoa_neighbours data/<session> --ssb 2667.75 --serving 317 --pcis 46 69 90 100 ... --cancel --blocks 12
+```
+
+`capture/tdoa_neighbours.py` correlates every cut of the serving cell with the SSS (and PSS) of the neighbour PCIs from its SIB3, after subtracting the serving cell's PSS and SSS (`--cancel`), and sums over all cuts.
+- **Why it works:** in a frame-synchronised network a neighbour's SSB arrives within the cut's ±15 µs.
+- **Output:** each detected neighbour's arrival time relative to the serving cell, from the same cuts with no clock model, and per time block with `--blocks`.
+- **Measured:** 14–28 ns spread over 10 s blocks for three neighbours of PCI 317 on 26 Nov (docs/results.md).
 
 ## MATLAB tools
 

@@ -4,3 +4,5 @@ matplotlib>=3.7
 pyserial>=3.5
 # optional: window grab for `ssb_live --snapshot`
 pillow>=10
+# optional: SIB1 decoding (capture/nr_sib1.py; LGPL-2.1+)
+pycrate>=0.7

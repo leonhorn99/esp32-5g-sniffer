@@ -86,9 +86,13 @@ class CellPanels:
                 notes.append(f"PCI {' and '.join(map(str, sorted(ps)))}: same SSB frequency and the same MIB, "
                              "most likely sectors of one site.")
         ann = sorted(p for p in shown if self.mib_info[p]["mib"]["kssb"] < 24)
+        dec = [p for p in ann if self.sib_decoded(p)]
+        ann = [p for p in ann if p not in dec]
+        if dec:
+            notes.append(f"PCI {', '.join(map(str, dec))}: SIB1 decoded, see the System info tab.")
         if ann:
             notes.append(f"PCI {', '.join(map(str, ann))}: SIB1 announced, so phones can probably attach directly "
-                         "(standalone 5G). An inference: SIB1 itself is not decoded.")
+                         "(standalone 5G). An inference until SIB1 is decoded (System info tab: Decode now).")
         self.mib_notes.set("\n".join(notes))
 
     def set_hidden(self, hidden: set):

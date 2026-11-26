@@ -25,6 +25,13 @@ shows the scan's estimated duration (both ranges with 2 looks: 14 min on the boa
 the SFN timing or a decoded cell of the scan has measured the board's crystal, scans and new
 channels centre their CFO search on it (+-2 ppm instead of +-12 ppm).
 
+System info tab: SIB1, SIB2... of the cell in words (capture/nr_sib1.py), from earlier decodes in
+results/, or 'Decode now' (or --sib): bursts timed to the cell's SIB1 slots, matlab/sib1_offline.m
+(5G Toolbox), pycrate; then the window of the other SI messages that SIB1 schedules. The stream pauses
+for it (2-5 min) and resumes on the same cell.
+Neighbours tab: each neighbour PCI (from the decoded SIB3, or typed) correlated in every cut of the
+tracked cell and summed (capture/tdoa_neighbours.py): its arrival time relative to the tracked cell.
+
 Decoding runs in a separate process. When it falls behind in live mode, cuts are counted
 as skipped instead of queued, so the view stays current.
 Receive only: the board never transmits.
@@ -45,16 +52,18 @@ import numpy as np
 
 from .nr_mib import content_key
 from .ssb_live_channel import ChannelPanel
+from .ssb_live_info import InfoPanels
 from .ssb_live_panels import CellPanels
 from .ssb_live_plots import PCI_COLORS, REDRAW_MS, Plots
-from .ssb_sources import (MAX_BACKLOG, ROOT, SCAN_BURSTS, LiveSource, ReplaySource, ScanSource, Source, _worker_init,
-                          add_source_args, check_source_args, decode_job)
+from .ssb_sources import (MAX_BACKLOG, ROOT, SCAN_BURSTS, LiveSource, ReplaySource, ScanSource, SibSource, Source,
+                          _worker_init, add_source_args, check_source_args, decode_job)
 
 
 # ============================================================================ the window
-class App(CellPanels, ChannelPanel, Plots):
+class App(CellPanels, ChannelPanel, InfoPanels, Plots):
     """The window: state, control (Start/Stop, sources) and event handling. The panels and plots
-    are mixins: ssb_live_panels (Cells, MIB), ssb_live_channel (Channel tab), ssb_live_plots."""
+    are mixins: ssb_live_panels (Cells, MIB), ssb_live_info (System info, Neighbours),
+    ssb_live_channel (Channel tab), ssb_live_plots."""
 
     def __init__(self, root, args):
         import tkinter as tk
@@ -87,6 +96,7 @@ class App(CellPanels, ChannelPanel, Plots):
         self.clock_ppm = None              # the board's crystal from the last SFN timing fit (ppm)
         self.found_cells: dict[str, tuple] = {}   # scan table row -> (LO, cell)
         self.scan_bursts = SCAN_BURSTS
+        self.init_info()
         self.reset_data()
 
         root.title("SSB live view (ESP32-C5)")
@@ -117,12 +127,15 @@ class App(CellPanels, ChannelPanel, Plots):
         side.rowconfigure(0, weight=1)
         self.tabs = ttk.Notebook(side)
         self.tabs.grid(row=0, column=0, sticky="nsew")
-        tab_cell, tab_mib, tab_ch, tab_log = (ttk.Frame(self.tabs, padding=4) for _ in range(4))
+        tab_cell, tab_mib, tab_sib, tab_nb, tab_ch, tab_log = (ttk.Frame(self.tabs, padding=4) for _ in range(6))
         self.tabs.add(tab_cell, text="Cell")
         self.tabs.add(tab_mib, text="MIB")
+        self.tabs.add(tab_sib, text="System info")
+        self.tabs.add(tab_nb, text="Neighbours")
         self.tabs.add(tab_ch, text="Channel")
         self.tabs.add(tab_log, text="Log")
         self.tab_cell, self.tab_mib, self.tab_ch, self.tab_log = tab_cell, tab_mib, tab_ch, tab_log
+        self.tab_sib, self.tab_nb = tab_sib, tab_nb
         self.ticker = tk.StringVar(value="")          # the latest message, below the tabs
         ttk.Label(side, textvariable=self.ticker, foreground="#555", width=1).grid(row=1, column=0, sticky="ew",
                                                                                   pady=(4, 0))
@@ -151,6 +164,8 @@ class App(CellPanels, ChannelPanel, Plots):
         ttk.Label(row, text="click: show/hide  double: only this\nright-click: track this PCI on the chip",
                   foreground="#555", justify="left").pack(side="left", padx=8)
         self.build_mib_panel(tab_mib)
+        self.build_sib_panel(tab_sib)
+        self.build_nb_panel(tab_nb)
         self.build_channel_panel(tab_ch)
         self.log = tk.Text(tab_log, height=10, width=44, font=("DejaVu Sans Mono", 8), wrap="none")
         sb = ttk.Scrollbar(tab_log, command=self.log.yview)
@@ -193,6 +208,7 @@ class App(CellPanels, ChannelPanel, Plots):
         # offset, and the SFN timing fit starts again (epoch)
         self.epoch, self.epoch_offset_us = 0, 0.0
         self.last_chip_us = self.last_host = None
+        self.info_reset()
 
     def describe_args(self) -> str:
         a = self.args
@@ -220,7 +236,7 @@ class App(CellPanels, ChannelPanel, Plots):
         try:
             while True:
                 ev = self.events.get_nowait()
-                if ev["kind"] == "scan":
+                if ev["kind"] in ("scan", "sibinfo"):
                     keep.append(ev)
         except queue.Empty:
             pass
@@ -315,11 +331,19 @@ class App(CellPanels, ChannelPanel, Plots):
                     self.add_log("ERROR " + ev["text"])
                 elif k == "scan":
                     self.on_scan(ev)
+                elif k == "sibinfo":
+                    self.on_sibinfo(ev)
+                elif k == "sib":
+                    self.on_sib_event(ev)
+                elif k == "sibstatus":
+                    self.sib_status.set(ev["text"])
                 elif k == "stopped":
                     self.btn_start.configure(state="normal")
                     self.btn_stop.configure(state="disabled")
                     if isinstance(self.source, ScanSource):
                         self.add_log(f"scan finished: {len(self.found_cells)} cells; double-click one to track it")
+                    elif isinstance(self.source, SibSource):
+                        self.after_sib()
         except queue.Empty:
             pass
         try:
@@ -333,6 +357,7 @@ class App(CellPanels, ChannelPanel, Plots):
         except queue.Empty:
             pass
         self.update_status()
+        self.info_tick()
         self.root.after(50, self.poll)
 
     def continue_clock(self, ev):
@@ -370,6 +395,7 @@ class App(CellPanels, ChannelPanel, Plots):
                                       "R", "cfo_ddc", "pci_chip", "scale")}
         job["epoch"] = self.epoch
         job["run"] = self.run_id
+        job["nb"] = self.nb_job()
         with self.lock:
             self.inflight += 1
         self.pool.submit(decode_job, job).add_done_callback(self.on_done)
@@ -389,6 +415,8 @@ class App(CellPanels, ChannelPanel, Plots):
         self.decode_ms.append(r["decode_ms"])
         if r.get("pci") is None:
             return
+        if r.get("nb"):
+            self.on_nb(r["nb"])
         self.n_decoded += 1
         pci = r["pci"]
         s = self.series.setdefault(pci, {k: deque(maxlen=5000) for k in ("t", "cfo", "snr", "ok", "tf", "sfn", "tfr")})
@@ -465,6 +493,10 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_source_args(p)
     p.add_argument("--hide", type=int, nargs="*", default=[], help="PCIs to hide at the start (click in the Cells table to change)")
+    p.add_argument("--neighbours", type=int, nargs="*", default=None,
+                   help="neighbour PCIs for the Neighbours tab (default: from the cell's decoded SIB3, if any)")
+    p.add_argument("--sib", action="store_true", help="once the cell's MIB decodes, decode its SIB1 and other SI messages "
+                                                      "(System info tab: board, MATLAB, pycrate)")
     p.add_argument("--no-autostart", dest="autostart", action="store_false")
     p.add_argument("--geometry", default=None, help="window size WxH (default: fits the side panel, at least 1560x920)")
     p.add_argument("--dpi", type=int, default=90)

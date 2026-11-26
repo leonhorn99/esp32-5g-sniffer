@@ -4,8 +4,10 @@ the headless monitor (capture/ssb_monitor.py) and the cell scanner (capture/cell
 - Channel helpers: the C5's tuning ranges, NR bands, LO lists (parse_los), an LO for an SSB.
 - Decoder worker: decode_job runs nr_ssb.receive on one cut in a separate process.
 - Sources: threads that put events (frames, logs, scan results) on a queue: LiveSource (the board
-  with SSBDET, reconnects by itself), ScanSource (a scan over LOs from the window), ReplaySource
-  (a recorded session).
+  with SSBDET, reconnects by itself), ScanSource (a scan over LOs from the window), SibSource (SIB1 and
+  the other SI messages of one cell: timed bursts, matlab/sib1_offline.m, pycrate), ReplaySource (a
+  recorded session).
+- decode_job also correlates the neighbour PCIs of a job's "nb" list in the cut (capture/tdoa_neighbours.py).
 - Command-line options shared by the live view and the monitor (add_source_args, check_source_args).
 
 Receive only: the board never transmits.
@@ -13,6 +15,7 @@ Receive only: the board never transmits.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import queue
 import threading
@@ -123,6 +126,17 @@ def decode_job(job: dict) -> list[dict]:
         keep["pci_chip"] = job.get("pci_chip") if stat is not None else None
         keep.update(seq=job.get("seq"), mode=job.get("mode"), stat=stat, cfo_in=cfo, f_ssb=job["f_ssb"],
                     epoch=job.get("epoch", 0), run=job.get("run"))
+        nb = job.get("nb")
+        if nb and stat is not None and r.get("pci") is not None and r.get("t_pss") is not None:
+            # neighbours of the chip's cell in the same cut (capture/tdoa_neighbours.py): the cut mixed to
+            # SS_REF with this cell's CFO; the curves are summed in the window
+            from capture.tdoa_neighbours import cut_curves
+            n = np.arange(len(x))
+            y = (x - np.mean(x)) * np.exp(-2j * np.pi * (job["f_ssb"] - f_lo + r["cfo"] - cfo_ddc) * n / fs)
+            half = int(round(nb.get("window_us", 15.0) * 1e-6 * fs))
+            pcis = [p for p in nb["pcis"] if p != r["pci"]]
+            keep["nb"] = {"serving": r["pci"], "fs": fs, "curves": cut_curves(y, fs, r["t_pss"], r["pci"], pcis, half,
+                                                                                nb.get("cancel", True), job["f_ssb"])}
         if r["ok"]:
             # after decoding, the sent PBCH symbols are known: re-encode the MIB (as nrBCH + nrPBCH)
             m = r["mib"]
@@ -414,6 +428,148 @@ class ScanSource(LiveSource):
                 sdr.close()
             except Exception:
                 pass
+
+
+class _Stopped(Exception):
+    pass
+
+
+class SibSource(LiveSource):
+    """SIB1 and the other SI messages of one cell, decoded from the window (or ssb_live --sib):
+    1. full bursts timed to the cell's SIB1 slots (sib1_capture.run; LO from lo_for_coreset), recorded
+       as a session in data/;
+    2. matlab/sib1_offline.m on them (MATLAB with the 5G Toolbox, at nice 10, two threads, its output in
+       logs/), then capture/nr_sib1.py on the JSON it writes to results/;
+    3. if SIB1 schedules other SI messages: bursts timed to their windows (nr_sib1.si_plan) and
+       sib1_offline with the options SIB1 gives (point A, time allocations, search space).
+    Puts {"kind": "sib", "pci", "ssb_mhz", "stage", "json"} after each decode and {"kind": "sibstatus",
+    "text"} as it goes. Shares the board handling of LiveSource; receive only."""
+
+    def __init__(self, args, out, pool, pci: int, ssb_mhz: float, mib: dict, lo_mhz: int, gain, cfo_hz: float,
+                 hits: int = 12, si: bool = True, max_bursts: int = 400):
+        super().__init__(args, out, pool)
+        self.pci, self.ssb_mhz, self.mib, self.lo, self.gain = pci, ssb_mhz, mib, lo_mhz, gain
+        self.cfo, self.hits, self.si, self.max_bursts = cfo_hz, hits, si, max_bursts
+        self.proc = None
+
+    def status(self, text: str):
+        self.out.put({"kind": "sibstatus", "text": text})
+        self.say(text)
+
+    def _sleep(self, s: float):
+        if self.stop_flag.wait(max(0.0, s)):
+            raise _Stopped()
+
+    def work(self):
+        from .capture_bursts import _setup, pick_gain
+        from .esp_sdr import rate_code_for
+        from .nr_sib1 import decode, si_plan
+        from .session import SessionWriter
+        a = self.args
+        rate = rate_code_for(20e6)
+        sdr, device = self.open_board()
+        if sdr is None:
+            return
+        try:
+            a2 = argparse.Namespace(**vars(a))
+            a2.freq, a2.bandwidth, a2.dccal = self.lo, None, False
+            gain = self.gain
+            if gain in (None, "auto"):
+                self.status(f"SIB: auto gain at LO {self.lo} MHz")
+                gain, _ = pick_gain(sdr, self.lo, rate, 10, a2)
+            gain = int(gain)
+            _setup(sdr, self.lo, a2, gain)
+            stages = [("sib1", None)]
+            done = 0
+            while stages and not self.stop_flag.is_set():
+                stage, plan = stages.pop(0)
+                folder = self.capture(sdr, device, rate, gain, stage, plan, SessionWriter)
+                if folder is None:
+                    break
+                js = self.matlab(folder, stage, plan)
+                if js is None:
+                    break
+                self.out.put({"kind": "sib", "pci": self.pci, "ssb_mhz": self.ssb_mhz, "stage": stage, "json": str(js)})
+                done += 1
+                if stage == "sib1" and self.si:
+                    j = json.loads(js.read_text())
+                    sib1 = None
+                    for it in (j["sib1"] if isinstance(j["sib1"], list) else [j["sib1"]] if j.get("sib1") else []):
+                        sib1 = decode(bytes.fromhex(it["hex"]))["sib1"] or sib1
+                    p = si_plan(sib1) if sib1 else None
+                    if sib1 is None:
+                        self.status("SIB: no SIB1 decoded, so no SI schedule; stopping here")
+                    elif p is None:
+                        self.status("SIB: SIB1 schedules no other SI messages")
+                    else:
+                        what = "; ".join(f"{'+'.join(m['sibs'])} every {m['T']} frames" for m in p["messages"])
+                        self.status(f"SIB: SIB1 schedules {what}: window frames {p['sfn_set']} mod {p['sfn_mod']}, "
+                                    + ("SIB1's slots" if p["slots"] is None else f"slots {p['slots']}"))
+                        stages.append(("si", p))
+            if done:
+                self.status(f"SIB: done ({done} decode{'s' if done > 1 else ''}); back to tracking")
+        except _Stopped:
+            self.status("SIB: stopped")
+        finally:
+            if self.proc and self.proc.poll() is None:
+                self.proc.terminate()
+            try:
+                sdr.close()
+            except Exception:
+                pass
+
+    def capture(self, sdr, device, rate, gain, stage, plan, SessionWriter):
+        """Bursts timed to the target slots, recorded in data/: the session folder, or None if none held a slot."""
+        from .sib1_capture import run
+        name = f"{time.strftime('%Y%m%d_%H%M%S')}_sib1_pci{self.pci}_live" + ("_si" if stage == "si" else "")
+        c = argparse.Namespace(freq=self.lo, ssb=self.ssb_mhz, pci=self.pci, hits=self.hits, max_bursts=self.max_bursts,
+                               ppm=-self.cfo / self.ssb_mhz, sfn_mod=plan["sfn_mod"] if plan else 1, slot=None,
+                               sfn_set=plan["sfn_set"] if plan else None, slots=plan["slots"] if plan else None,
+                               anchor_every=8, bits=8, gain=gain)
+        writer = SessionWriter(ROOT / "data" / name, device,
+                               {"tool": "ssb_live (SIB)", "freq_mhz": [self.lo], "ssb_mhz": self.ssb_mhz, "pci": self.pci,
+                                "rate_msps": 20, "bits": 8, "gain": gain, "sfn_mod": c.sfn_mod, "sfn_set": c.sfn_set,
+                                "slots": c.slots, "stage": stage})
+        what = "SIB1 slots" if stage == "sib1" else "SI window slots"
+        self.status(f"SIB: capturing bursts on PCI {self.pci}'s {what} (LO {self.lo} MHz, {self.hits} wanted)")
+        t0 = time.monotonic()
+        try:
+            res = run(sdr, c, rate, writer, say=lambda t: self.status("SIB: " + t.strip()), sleep=self._sleep)
+        finally:
+            writer.close()
+        self.say(f"SIB: {res['bursts']} bursts in {time.monotonic() - t0:.0f} s, {len(res['hits'])} hold a whole slot, "
+                 f"{res['anchors']} SSB anchors -> data/{name}")
+        if not res["hits"]:
+            self.status(f"SIB: no burst held a whole {what[:-1]}; try again in a few minutes (the USB tick grid drifts)")
+            return None
+        return ROOT / "data" / name
+
+    def matlab(self, folder: Path, stage: str, plan):
+        """sib1_offline on the session (output to logs/, never piped): the result JSON, or None."""
+        import shutil
+        import subprocess
+        if not shutil.which("matlab"):
+            self.status("SIB: MATLAB not found; decode later with matlab/sib1_offline.m (the bursts are in data/)")
+            return None
+        opts = (f"'FreqMHz', {self.lo}, 'SSBMHz', {self.ssb_mhz:g}, 'PCI', {self.pci}, 'CFOCenter', {self.cfo:.0f}, "
+                f"'Combine', true" + (f", {plan['matlab']}" if plan else ""))
+        cmd = f"maxNumCompThreads(2); addpath('matlab'); sib1_offline('data/{folder.name}', {opts})"
+        log = ROOT / "logs" / f"sib1_{folder.name}.log"
+        self.status(f"SIB: decoding in MATLAB (about a minute; log: logs/{log.name})")
+        with open(log, "w") as fh:
+            self.proc = subprocess.Popen(["nice", "-n", "10", "matlab", "-batch", cmd], cwd=ROOT, stdout=fh,
+                                         stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            while self.proc.poll() is None:
+                if self.stop_flag.wait(0.5):
+                    self.proc.terminate()
+                    raise _Stopped()
+        js = ROOT / "results" / f"sib1_{folder.name}_{self.pci}.json"
+        tail = [ln for ln in log.read_text(errors="replace").splitlines() if ln.startswith("SIB1:")]
+        if self.proc.returncode != 0 or not js.exists():
+            self.status(f"SIB: MATLAB failed (exit {self.proc.returncode}); see logs/{log.name}")
+            return None
+        self.status("SIB: " + (tail[-1] if tail else "decoded") + f" -> results/{js.name}")
+        return js
 
 
 class ReplaySource(Source):

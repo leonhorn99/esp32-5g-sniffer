@@ -130,22 +130,54 @@ The live view's Channel tab, `2g 5g`, on a virtual display with the board:
 
 Log: `results/sweep_2g5g_20261124.jsonl` (one line per LO), window: `results/ssb_live_sweep_2g5g.png`.
 
-## SIB1 of PCI 317, decoded offline (23 Nov recording, decoded 24 Nov 2026)
+## System information of both cells (decoded offline, 23–26 Nov 2026)
 
-`matlab/sib1_offline.m` on the 60 bursts of the 23 Nov survey at LO 2670 MHz:
-- **Frame clock:** 5 bursts with PCI 317's MIB gave its frame clock on the board's clock: +3.0 ppm, residual 0.22 µs RMS.
-- **Where SIB1's control channel is**, from the MIB (pdcch-ConfigSIB1 16): CORESET#0 of 24 RB × 2 symbols at 2665.50–2669.82 MHz, Type0-PDCCH in slots 3 and 4 of even frames.
-- **SIB1 decoded:** 5 such slots lay whole in a burst. In 2 of them (slot 3 of SFN 240 and 336) the PDCCH carried a DCI 1_0 with the SI-RNTI:
-  - aggregation level 4, RBs 0–19, symbols 3–11 (TDRA row 2), MCS 4, RV 0;
-  - its PDSCH decoded with the CRC passing: a 111-byte SIB1, identical in both.
-- **When the cell sends it:** both SFNs are multiples of 16, the start of a 160 ms SIB1 period. The other 3 slots held no SIB1, and on 24 Nov no slot 3 of such a frame was captured. So the cell most likely sends SIB1 once per 160 ms without repetitions (*estimate* from 11 slots).
-- **The network:** bit 42 of the message holds MCC 232 (Austria) followed by MNC 05.
-  - This is read from the bit pattern, not yet from a full ASN.1 decode.
-  - As far as we know, 232-05 is Hutchison Drei Austria.
-- **SNR:** the empty symbols of that slot (2 and 12) are about 29 dB below the occupied ones.
+Tools: `capture/sib1_capture.py` (bursts timed onto the slots), `matlab/sib1_offline.m` (PDCCH, DCI, PDSCH, DL-SCH, soft combining), `capture/nr_sib1.py` (TS 38.331 ASN.1, with `pycrate`). Tracking area codes and cell identities are left out here, since they identify the sites.
 
-PCI 165 (n1, LO 2131): none of the 9 suitable slots in the 23 Nov n1 recording was in a frame with SFN divisible by 16, and none carried SIB1. Its CORESET#0 (2120.68–2129.32 MHz) also reaches 0.3 MHz past the 20 MS/s band at LO 2131 (the C5 tunes no lower). A capture timed to that slot would settle it.
+| | PCI 317 (n7) | PCI 165 (n1) |
+|---|---|---|
+| Network (PLMN) | 232-05 (Hutchison Drei, as far as we know) | 232-01 (A1) |
+| Downlink carrier | 52 RB (10 MHz), centre 2670.000 MHz | 106 RB (20 MHz), centre 2125.000 MHz |
+| Uplink carrier | centre 2550.000 MHz (120 MHz below) | centre 1935.000 MHz (190 MHz below) |
+| SSBs sent | index 3 only, every 20 ms, 20 dBm/RE | index 0 only, every 20 ms, 18 dBm/RE |
+| CORESET#0 (from the MIB) | 24 RB × 2 symbols, 2665.50–2669.82 MHz | 48 RB × 1 symbol, 2120.68–2129.32 MHz |
+| SIB1 schedule (measured) | slot 3; seen at SFN mod 16 = 0, 4, 8 with RV 0, 2, 3 (SFN mod 16 = 12 with RV 1 presumed: every 40 ms); always RBs 0–19, MCS 4 | slot 5 of even frames, RV by ceil(3k/2) mod 4, k = (SFN/2) mod 4; a different 8-RB allocation each time, MCS 9 |
+| Other SI messages | SIB2–5 every 64 frames (frame 2 of the cycle, slot 3) | SIB2–4 every 8 frames (any slot of that frame), SIB5 every 16 |
+| SIB3: neighbours on the same frequency | PCI 46, 69, 90, 100, 163, 174, 241, 266, 306, 333, 341, 350, 357, 456, 498 | none listed |
+| SIB4: other NR carriers | n78 3599.04 MHz (PCI 229, 418, 662), n28 761.05 MHz (PCI 322, 728, 972) | n78 3540.00 MHz |
+| SIB5: LTE carriers | EARFCN 500 (2160.0 MHz, 20 MHz), 3375 (2682.5 MHz, 15 MHz), 1525, 3625 | (not captured) |
 
+- **The round carrier centres** (2670.000, 2550.000, 2125.000, 1935.000 MHz) also check our reading of k_SSB, CORESET#0 and point A.
+- **Decoding SI messages other than SIB1 needs SIB1:**
+  - their PDSCH DM-RS sequence starts at point A, not at CORESET#0 (`OffsetToPointA`);
+  - their time allocation comes from SIB1's `pdsch-TimeDomainAllocationList` (`TimeAllocationList`).
+  - Without these, all 8 copies of PCI 317's SI message failed at an apparent SNR of −16 dB; with them, all 8 decoded.
+- **PCI 165 sends its SI messages in search space 1** (every slot), not in the SIB1 slots. Only a capture over the whole SI window (`--slots 0 … 9`) catches its RV 0, 2 and 3 copies; the RV 1 copies alone cannot decode.
+- **Counts on 26 Nov:**
+  - PCI 317: SIB1 19 of 20, then 13 of 13; SI message 8 of 8.
+  - PCI 165, at the board's better position (SSB SNR −0.4 dB): SIB1 5 times from 31 DCIs (four by combining 3–9 copies with their own DCIs), SI message 18 times.
+  - At the earlier position (SSB SNR −5 to −7.5 dB) only 1 DCI in 66 slots, and no SIB1.
+- **Correction:** until 26 Nov 13:00 we wrote that PCI 317 sends SIB1 only once per 160 ms. The bursts had only covered frames with SFN mod 16 = 0; the copies at SFN mod 4 = 0 showed up once other frames were targeted.
+
+**Burst timing (26 Nov):**
+- A capture starts on the next 1 ms USB frame after its command.
+- That tick grid drifts against the cell's 1 ms slots by about 5 µs/s, so a 1.64 ms burst can hold a whole slot for about 60 % of each 3-minute cycle, and none for the rest.
+- `sib1_capture` now plans bursts on the tick grid and takes SSB anchors while no tick fits: 60 slots in 83 bursts (9 s).
+
+## Neighbour cells from the same cuts (26 Nov 2026)
+
+`capture/tdoa_neighbours.py` on a 2-minute SSB stream of PCI 317 (2945 cuts at 25/s):
+- **Method:** each cut is correlated with the SSS (and PSS) of the 15 SIB3 neighbours, after subtracting PCI 317's own PSS and SSS.
+- **Why one board suffices:** the operator's n7 sites are frame-synchronised, so a neighbour's SSB arrives within the ±15 µs of the cut, and its delay relative to PCI 317 needs no clock model.
+
+| Neighbour | SSS statistic (noise ≲ 3) | Arrival after PCI 317 | Spread of 10 s blocks |
+|---|---|---|---|
+| PCI 100 | 11.4 | +1.875 µs (+562 m) | 14 ns (4.1 m) |
+| PCI 90 | 10.1 | +0.566 µs (+170 m) | 28 ns (8.4 m) |
+| PCI 69 | 8.4 | +0.118 µs (+35 m) | 19 ns (5.6 m) |
+
+- **Position matters:** at the board's earlier position that day no neighbour stood out. On 23 Nov at the old place, PCI 100 was at +1.902 µs (15 ns RMS over 4 s blocks).
+- **What the numbers mean:** the arrival differences are path-length differences plus any offset between the sites' frame timing (unknown). The spread is the precision for a static board; a moving board would show changes of these values (*estimate*: a few metres per 10 s).
 ## The board's crystal
 
 The frequency offset of a cell, and the drift of its SFN-anchored timing, measure the board's crystal against the base station. The two agree to 30–130 Hz, and two base stations agreed on the board's clock within 0.2 ppm.

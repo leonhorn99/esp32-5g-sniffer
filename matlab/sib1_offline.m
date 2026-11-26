@@ -22,6 +22,21 @@ function res = sib1_offline(folder, opt)
 %      single symbol, pos2, CDM groups without data 2 (1 for 2-symbol type B), port 1000; VRB
 %      bundles of 2. Then nrPDSCHDecode and nrDLSCHDecoder: a passed CRC is a decoded SIB1.
 %
+%   SI messages other than SIB1 (DCI with SI indicator 1, Type0A search space) differ in two ways, both
+%   needing the decoded SIB1 (capture/nr_sib1.py --matlab prints the options):
+%   - the PDSCH DM-RS sequence starts at point A (CRB 0), not at CORESET#0 ('OffsetToPointA':
+%     CORESET#0 starts at CRB offsetToPointA - Table 13-1 offset);
+%   - the time allocation comes from SIB1's pdsch-TimeDomainAllocationList when it has one
+%     ('TimeAllocationList'), not from default table A (TS 38.214 Table 5.1.2.1.1-1).
+%   Found on PCI 317 on 26 Nov: with both, all 8 copies of its SI message decoded; without, none.
+%   5. 'Combine', true (weak cells): (a) every slot whose DCI decoded but whose PDSCH did not is
+%      demodulated with its own DCI (allocation, RV) and added to a DL-SCH soft buffer per transport
+%      block size until the CRC passes (PCI 165 moves its SIB1 to other RBs each time); (b) if all decoded
+%      DCIs have the same allocation (PCI 317), it is also assumed in the slots without a decoded DCI
+%      whose PDSCH DM-RS is there (metric >= PresenceThreshold). NR signals the RV only in the DCI (TS 38.321 5.3.1 has no rule for SIB1); the RV of an
+%      occasion is taken as ceil(3k/2) mod 4 with k = (SFN/2) mod 4 (the LTE rule, TS 36.321 5.3.1),
+%      which every DCI decoded so far followed. A passing CRC confirms it.
+%
 %   res  struct: anchors, the timing fit, MIB-derived geometry, and .tries (one row per slot tried:
 %        burst, SFN, slot, timing offset, DCI found, DCI fields, TBS, CRC, SIB1 bits as hex)
 %   Writes results/sib1_<session>_<PCI>.mat and .json (decoded SIB1s as hex, for the ASN.1 step).
@@ -35,6 +50,14 @@ arguments
     opt.Timing_us double = [0 -1 1 -2 2 -3 3 -4 4 -5 5]
     opt.Out (1,:) char = ''
     opt.KeepGrids (1,1) logical = false            % keep each tried slot's grid (at its best DM-RS offset) in res.tries
+    opt.Combine (1,1) logical = false              % soft-combine the PDSCH of every occasion (see below)
+    opt.CombineSlot double = []                    % slot to combine (default: the slot of the first decoded DCI)
+    opt.PresenceThreshold (1,1) double = 0.35      % PDSCH DM-RS metric for 'a PDSCH is there' (noise ~0.17)
+    opt.OffsetToPointA (1,1) double = NaN          % from the decoded SIB1: needed for other SI messages (SIB2...)
+    opt.TimeAllocationList double = []             % SIB1 pdsch-TimeDomainAllocationList: rows [typeA(1)/B(0) S L]
+    opt.Slots double = []                          % try these slots of the frames below instead of SIB1's n0, n0+1
+    opt.FrameMod (1,1) double = 1                  % ... in frames with mod(SFN, FrameMod) in FrameSet
+    opt.FrameSet double = 0
 end
 t0clock = tic;
 [~, name] = fileparts(folder);
@@ -115,6 +138,7 @@ pdcch = nrPDCCHConfig('CORESET', cs, 'SearchSpace', ss, 'NStartBWP', 0, 'NSizeBW
                       'DMRSScramblingID', opt.PCI);  % common search space: no RNTI hashing (SI-RNTI is checked in
                                                  % nrDCIDecode); DM-RS N_ID = PCI (the toolbox's default is 2)
 nFDRA = ceil(log2(nRB * (nRB + 1) / 2));
+siOpt = struct('c0crb', opt.OffsetToPointA - offRB, 'tdra', opt.TimeAllocationList);   % for SI messages (see help)
 Kdci = nFDRA + 4 + 1 + 5 + 2 + 1 + 15;               % DCI 1_0, SI-RNTI, licensed spectrum
 
 % 3. slots n0, n0+1 of the right frames that lie whole in a burst
@@ -125,10 +149,18 @@ for b = 1:numel(bursts)
     dur_us = numel(x.iq) / x.fs * 1e6;
     fA = (double(x.t0_us) - p(2)) / p(1);
     for F = floor(fA) - 1:ceil(fA + dur_us / 1e4) + 1
-        if mod(mod(F, 1024), 2) ~= parity
-            continue
+        if isempty(opt.Slots)
+            if mod(mod(F, 1024), 2) ~= parity
+                continue
+            end
+            slotList = [n0 n0 + 1];
+        else
+            if ~ismember(mod(mod(F, 1024), opt.FrameMod), opt.FrameSet)
+                continue
+            end
+            slotList = opt.Slots;
         end
-        for s = [n0 n0 + 1]
+        for s = slotList
             ts = p(2) + p(1) * (F + s / 10);
             st = (ts - double(x.t0_us)) * x.fs / 1e6;
             if st - 6 * x.fs / 1e6 >= 0 && st + (1e3 + 6) * x.fs / 1e6 <= numel(x.iq)
@@ -143,7 +175,7 @@ nfft = round(fsNew / scs);
 okFail = {'fail', 'ok'};
 tries = struct('burst', {}, 'sfn', {}, 'slot', {}, 'dt_us', {}, 'dci', {}, 'al', {}, 'cand', {}, 'fields', {}, ...
                'tbs', {}, 'crcOk', {}, 'hex', {}, 'evmPdcch', {}, 'snrPdsch', {}, 'dmrsMetric', {}, ...
-               'dmrsDt_us', {}, 'symPowDb', {}, 'grid', {});
+               'dmrsDt_us', {}, 'symPowDb', {}, 'grid', {}, 'grid0', {});
 lastB = 0;
 for c = 1:size(cand, 1)
     b = cand(c, 1); F = cand(c, 2); s = cand(c, 3);
@@ -160,11 +192,14 @@ for c = 1:size(cand, 1)
     carrier.NFrame = mod(F, 1024);
     t = struct('burst', b, 'sfn', mod(F, 1024), 'slot', s, 'dt_us', NaN, 'dci', false, 'al', NaN, 'cand', NaN, ...
                'fields', [], 'tbs', NaN, 'crcOk', false, 'hex', '', 'evmPdcch', NaN, 'snrPdsch', NaN, ...
-               'dmrsMetric', NaN, 'dmrsDt_us', NaN, 'symPowDb', [], 'grid', []);
+               'dmrsMetric', NaN, 'dmrsDt_us', NaN, 'symPowDb', [], 'grid', [], 'grid0', []);
     for dt = opt.Timing_us
         st = round((cand(c, 4) + dt * x.fs / 1e6) * fsNew / x.fs);
         seg = y(st + 1:st + round(fsNew * 1e-3));
         grid = nrOFDMDemodulate(carrier, seg, 'SampleRate', fsNew, 'Nfft', nfft, 'CarrierFrequency', f0);
+        if opt.Combine && dt == 0
+            t.grid0 = grid;                        % the frame clock's own timing (0.1-0.7 us RMS)
+        end
         dm = sib1_dmrs_metric(carrier, pdcch, grid, nCCE);
         if ~(dm <= t.dmrsMetric)                   % best over the timing offsets (NaN at first)
             t.dmrsMetric = dm; t.dmrsDt_us = dt;
@@ -175,11 +210,14 @@ for c = 1:size(cand, 1)
             end
         end
         [dcibits, al, ci, evm] = sib1_blind_pdcch(carrier, pdcch, grid, Kdci, opt.PCI);
+        if ~isempty(dcibits) && opt.Combine
+            t.grid0 = grid;                        % the timing whose PDCCH decoded
+        end
         if ~isempty(dcibits)
             t.dt_us = dt; t.dci = true; t.al = al; t.cand = ci; t.evmPdcch = evm;
             t.fields = sib1_dci_fields(dcibits, nFDRA, nRB);
             [t.tbs, t.crcOk, blk, t.snrPdsch] = sib1_pdsch(carrier, grid, t.fields, mib.dmrsTypeAPosition, ...
-                                                           opt.PCI, nRB);
+                                                           opt.PCI, nRB, siOpt);
             if t.crcOk
                 t.hex = lower(reshape(dec2hex(bin2dec(reshape(char(blk(:).' + '0'), 8, []).'), 2).', 1, []));
             end
@@ -199,10 +237,23 @@ for c = 1:size(cand, 1)
     end
 end
 
+comb = struct('used', 0, 'decoded', {{}});
+if opt.Combine
+    comb = sib1_combine(tries, carrier, mib, opt, nRB, okFail, siOpt);
+    for k = 1:numel(comb.decoded)
+        d = comb.decoded{k};
+        tries(end + 1) = struct('burst', NaN, 'sfn', d.sfn, 'slot', d.slot, 'dt_us', 0, 'dci', false, 'al', NaN, ...
+            'cand', NaN, 'fields', d.fields, 'tbs', d.tbs, 'crcOk', true, 'hex', d.hex, 'evmPdcch', NaN, ...
+            'snrPdsch', NaN, 'dmrsMetric', NaN, 'dmrsDt_us', NaN, 'symPowDb', [], 'grid', [], 'grid0', []); %#ok<AGROW>
+    end
+    [tries.grid0] = deal([]);                      % the grids are not needed in the result
+end
+
 res = struct('session', name, 'pci', opt.PCI, 'fLO', opt.FreqMHz * 1e6, 'fSSB', fSSB, 'anchors', anc, ...
              'clock', p, 'clockResidRms_us', rms(resid), 'mib', mib, 'iSSB', iSSB, 'cfoSSB', cfoSSB, ...
              'coreset0', struct('nRB', nRB, 'nSym', nSymC, 'offsetRB', offRB, 'fLow', fLow, 'f0', f0), ...
-             'type0', struct('n0', n0, 'frameParity', parity, 'firstSymbol', firstSym), 'tries', tries);
+             'type0', struct('n0', n0, 'frameParity', parity, 'firstSymbol', firstSym), 'tries', tries, ...
+             'combine', rmfield(comb, 'decoded'));
 fprintf('SIB1: %d slots tried, %d DCIs, %d CRC ok (%.0f s)\n', numel(tries), sum([tries.dci]), sum([tries.crcOk]), ...
         toc(t0clock));
 out = opt.Out;
@@ -211,8 +262,10 @@ if isempty(out)
 end
 save([out '.mat'], 'res');
 ok = tries([tries.crcOk]);
-j = struct('session', name, 'pci', opt.PCI, 'ssb_mhz', opt.SSBMHz, 'lo_mhz', opt.FreqMHz, ...
-           'sib1', struct('sfn', {ok.sfn}, 'slot', {ok.slot}, 'tbs', {ok.tbs}, 'hex', {ok.hex}));
+j = struct('session', name, 'pci', opt.PCI, 'ssb_mhz', opt.SSBMHz, 'lo_mhz', opt.FreqMHz, 'kssb', mib.kSSB, ...
+           'pdcch_config_sib1', mib.pdcchConfigSIB1, 'ssb_index', iSSB, ...
+           'sib1', struct('sfn', {ok.sfn}, 'slot', {ok.slot}, 'tbs', {ok.tbs}, 'hex', {ok.hex}, ...
+                          'si', num2cell(arrayfun(@(t) t.fields.si, ok))));   % si 0: SIB1, 1: other SI message
 fid = fopen([out '.json'], 'w');
 fprintf(fid, '%s\n', jsonencode(j, 'PrettyPrint', true));
 fclose(fid);
@@ -299,8 +352,27 @@ f.rbStart = st; f.nRB = L;
 end
 
 
-function [tbs, ok, blk, snrDb] = sib1_pdsch(carrier, grid, f, dmrsPos, ncellid, nRB)
-% The PDSCH a DCI 1_0 with SI-RNTI schedules (TS 38.214 5.1.2.1.1 Table 5.1.2.1.1-2, 5.1.3.1, 5.1.6.2).
+function [tbs, ok, blk, snrDb] = sib1_pdsch(carrier, grid, f, dmrsPos, ncellid, nRB, siOpt)
+% Decode the PDSCH a DCI 1_0 with SI-RNTI schedules, from one slot.
+if nargin < 7
+    siOpt = struct('c0crb', NaN, 'tdra', []);
+end
+[pdsch, R] = sib1_pdsch_config(f, dmrsPos, ncellid, nRB, siOpt);
+if f.si == 1 && ~isnan(siOpt.c0crb)               % DM-RS from point A: CORESET#0 at its CRB index
+    carrier.NStartGrid = siOpt.c0crb;
+    pdsch.NStartBWP = siOpt.c0crb;
+end
+[cw, snrDb, ~, tbs] = sib1_pdsch_llr(carrier, grid, pdsch, R);
+dec = nrDLSCHDecoder('TargetCodeRate', R, 'TransportBlockLength', tbs, 'LDPCDecodingAlgorithm', 'Normalized min-sum', ...
+                     'MaximumLDPCIterationCount', 20);
+[blk, err] = dec(cw, pdsch.Modulation, 1, f.rv);
+ok = ~err;
+end
+
+
+function [pdsch, R] = sib1_pdsch_config(f, dmrsPos, ncellid, nRB, siOpt)
+% The PDSCH of a DCI 1_0 with SI-RNTI (TS 38.214 V17.16.0 5.1.2.1.1 Table 5.1.2.1.1-2, 5.1.3.1, 5.1.6.2).
+% SI messages (f.si 1) take SIB1's pdsch-TimeDomainAllocationList when given (siOpt.tdra).
 % Table 5.1.2.1.1-2, default A, normal CP: rows {mapping, S, L} for dmrs-TypeA-Position 2 and 3; K0 is 0.
 tabA = {'A' 2 12 3 11; 'A' 2 10 3 9; 'A' 2 9 3 8; 'A' 2 7 3 6; 'A' 2 5 3 4; 'B' 9 4 10 4; 'B' 4 4 6 4; ...
         'B' 5 7 5 7; 'B' 5 2 5 2; 'B' 9 2 9 2; 'B' 12 2 12 2; 'A' 1 13 1 13; 'A' 1 6 1 6; 'A' 2 4 2 4; ...
@@ -310,6 +382,11 @@ if dmrsPos == 2
     S = r{2}; L = r{3};
 else
     S = r{4}; L = r{5};
+end
+if nargin >= 5 && f.si == 1 && ~isempty(siOpt.tdra)
+    row = siOpt.tdra(f.tdra + 1, :);
+    r{1} = char('B' - (row(1) == 1));                 % 1: type A, 0: type B
+    S = row(2); L = row(3);
 end
 mcsTab = nrPDSCHMCSTables;
 m = mcsTab.QAM64Table(mcsTab.QAM64Table.MCSIndex == f.mcs, :);
@@ -323,6 +400,13 @@ pdsch.DMRS.DMRSAdditionalPosition = 2;
 pdsch.DMRS.DMRSTypeAPosition = dmrsPos;
 pdsch.DMRS.NumCDMGroupsWithoutData = 2 - (L == 2 && r{1} == 'B');
 pdsch.DMRS.DMRSPortSet = 0;
+R = m.TargetCodeRate;
+end
+
+
+function [cw, snrDb, presence, tbs] = sib1_pdsch_llr(carrier, grid, pdsch, R)
+% Soft bits of one slot's PDSCH, its SNR, and how well its DM-RS matches (per RB and symbol:
+% |sum conj(d) r|^2 / (6 sum |r|^2), about 1/6 for noise, (6 snr + 1) / (6 (snr + 1)) with a PDSCH).
 [ind, info] = nrPDSCHIndices(carrier, pdsch);
 dInd = nrPDSCHDMRSIndices(carrier, pdsch);
 dSym = nrPDSCHDMRS(carrier, pdsch);
@@ -330,11 +414,112 @@ dSym = nrPDSCHDMRS(carrier, pdsch);
 [sym, hs] = nrExtractResources(ind, grid, h);
 eq = nrEqualizeMMSE(sym, hs, nVar);
 snrDb = 10 * log10(mean(abs(hs) .^ 2) / nVar);
-cw = nrPDSCHDecode(carrier, pdsch, eq, nVar);
-R = m.TargetCodeRate;
+r = grid(dInd);
+z = reshape(conj(dSym) .* r, 6, []);
+e = reshape(abs(r) .^ 2, 6, []);
+presence = mean(abs(sum(z, 1)) .^ 2 ./ (6 * sum(e, 1)));
+c = nrPDSCHDecode(carrier, pdsch, eq, nVar);
+cw = c{1};
 tbs = nrTBS(pdsch.Modulation, 1, numel(pdsch.PRBSet), info.NREPerPRB, R);
-dec = nrDLSCHDecoder('TargetCodeRate', R, 'TransportBlockLength', tbs, 'LDPCDecodingAlgorithm', 'Normalized min-sum', ...
-                     'MaximumLDPCIterationCount', 20);
-[blk, err] = dec(cw{1}, pdsch.Modulation, 1, f.rv);
-ok = ~err;
+end
+
+
+function comb = sib1_combine(tries, carrier, mib, opt, nRB, okFail, siOpt)
+% Soft combining over occasions (option 'Combine'; see the help above).
+comb = struct('used', 0, 'decoded', {{}}, 'presence', [], 'presenceSfn', [], 'rvRule', 'ceil(3k/2) mod 4, k = (SFN/2) mod 4');
+dci = tries([tries.dci] & ~[tries.crcOk] & ~arrayfun(@(t) isempty(t.grid0), tries));
+% (a) each slot with its own DCI, grouped by SI indicator and transport block size
+if ~isempty(dci)
+    key = arrayfun(@(t) t.fields.si * 1e6 + t.tbs, dci);
+    for k = unique(key)
+        grp = dci(key == k);
+        dec = [];
+        nCopies = 0;
+        for t = grp
+            c = carrier; c.NSlot = t.slot; c.NFrame = t.sfn;
+            [pdsch, R] = sib1_pdsch_config(t.fields, mib.dmrsTypeAPosition, opt.PCI, nRB, siOpt);
+            if t.fields.si == 1 && ~isnan(siOpt.c0crb)
+                c.NStartGrid = siOpt.c0crb; pdsch.NStartBWP = siOpt.c0crb;
+            end
+            [cw, snrDb, ~, tbs] = sib1_pdsch_llr(c, t.grid0, pdsch, R);
+            if isempty(dec)
+                dec = nrDLSCHDecoder('TargetCodeRate', R, 'TransportBlockLength', tbs, ...
+                                     'LDPCDecodingAlgorithm', 'Normalized min-sum', 'MaximumLDPCIterationCount', 30);
+            end
+            [blk, err] = dec(cw, pdsch.Modulation, 1, t.fields.rv);
+            nCopies = nCopies + 1;
+            comb.used = comb.used + 1;
+            fprintf('combine: + SFN %4d slot %d (own DCI: RB %d+%d, RV %d, SI %d, SNR %+.1f dB): %d copies -> CRC %s\n', ...
+                    t.sfn, t.slot, t.fields.rbStart, t.fields.nRB, t.fields.rv, t.fields.si, snrDb, nCopies, okFail{~err + 1});
+            if ~err
+                hex = lower(reshape(dec2hex(bin2dec(reshape(char(blk(:).' + '0'), 8, []).'), 2).', 1, []));
+                comb.decoded{end + 1} = struct('sfn', t.sfn, 'slot', t.slot, 'fields', t.fields, 'tbs', tbs, 'hex', hex, ...
+                                               'copies', nCopies);
+                reset(dec);
+                nCopies = 0;
+            end
+        end
+    end
+end
+% (b) one allocation for all: also the slots without a decoded DCI whose PDSCH DM-RS is there
+allDci = tries([tries.dci]);
+if isempty(allDci)
+    fprintf('combine: no DCI decoded, so no allocation to assume\n');
+    return
+end
+alloc = arrayfun(@(t) t.fields.rbStart * 1e6 + t.fields.nRB * 1e3 + t.fields.tdra * 10 + t.fields.si, allDci);
+if numel(unique(alloc)) > 1
+    fprintf('combine: the decoded DCIs use %d different allocations: no allocation assumed for slots without a DCI\n', ...
+            numel(unique(alloc)));
+    fprintf('combine: %d copies combined, %d SIB/SI decoded\n', comb.used, numel(comb.decoded));
+    return
+end
+ref = find([tries.dci], 1);
+f0 = tries(ref).fields;
+slot = opt.CombineSlot;
+if isempty(slot)
+    slot = tries(ref).slot;
+end
+[pdsch, R] = sib1_pdsch_config(f0, mib.dmrsTypeAPosition, opt.PCI, nRB);
+tbs = [];
+dec = [];
+n = 0;
+fprintf('combine: allocation of the DCI in SFN %d slot %d (RB %d+%d, TDRA %d, MCS %d), slot %d of every occasion\n', ...
+        tries(ref).sfn, tries(ref).slot, f0.rbStart, f0.nRB, f0.tdra, f0.mcs, slot);
+for t = tries
+    if t.slot ~= slot || isempty(t.grid0) || t.dci
+        continue
+    end
+    carrier.NSlot = t.slot;
+    carrier.NFrame = t.sfn;
+    [cw, snrDb, pres, tbsK] = sib1_pdsch_llr(carrier, t.grid0, pdsch, R);
+    comb.presence(end + 1) = pres;
+    comb.presenceSfn(end + 1) = t.sfn;
+    if pres < opt.PresenceThreshold
+        continue
+    end
+    if t.dci
+        rv = t.fields.rv;
+    else
+        rv = mod(ceil(1.5 * mod(floor(t.sfn / 2), 4)), 4);
+    end
+    if isempty(dec)
+        tbs = tbsK;
+        dec = nrDLSCHDecoder('TargetCodeRate', R, 'TransportBlockLength', tbs, ...
+                             'LDPCDecodingAlgorithm', 'Normalized min-sum', 'MaximumLDPCIterationCount', 30);
+    end
+    [blk, err] = dec(cw, pdsch.Modulation, 1, rv);
+    n = n + 1;
+    comb.used = comb.used + 1;
+    fprintf('combine: + SFN %4d (RV %d, DM-RS %.2f, SNR %+.1f dB): %d copies -> CRC %s\n', t.sfn, rv, pres, snrDb, n, ...
+            okFail{~err + 1});
+    if ~err
+        hex = lower(reshape(dec2hex(bin2dec(reshape(char(blk(:).' + '0'), 8, []).'), 2).', 1, []));
+        comb.decoded{end + 1} = struct('sfn', t.sfn, 'slot', t.slot, 'fields', f0, 'tbs', tbs, 'hex', hex, 'copies', n);
+        reset(dec);
+        n = 0;
+    end
+end
+fprintf('combine: %d occasions with a PDSCH (of %d in slot %d), %d SIB1 decoded\n', comb.used, numel(comb.presence), ...
+        slot, numel(comb.decoded));
 end
