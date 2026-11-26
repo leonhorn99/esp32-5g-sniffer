@@ -19,7 +19,7 @@ firmware/backups/
 firmware/prebuilt/
 
 # editor settings with local paths
-.vscode/settings.json
+.vscode/
 
 # firmware builds (they go to ~/build/esp32_5g_sniffer anyway)
 firmware/espsoup-firmware/build*/
